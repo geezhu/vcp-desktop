@@ -1,0 +1,4 @@
+# Local process/docs that should stay untracked
+TASK-COMMIT-PUSH-RULE.md
+docs/linux-aio-design.md
+tmp/
