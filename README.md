@@ -23,7 +23,18 @@ chmod +x bin/vcp-installer scripts/*.sh
 ./bin/vcp-installer --cli --dry-run
 ./bin/vcp-installer resume --cli --dry-run
 ./bin/vcp-installer --headless --dry-run --simulate-gui-step
+./bin/vcp-installer init --cli --yes --workspace-root ~/vcp --backend-cmd "npm run start" --chat-cmd "npm run start"
+./bin/vcp-installer start
+./bin/vcp-installer status
+./bin/vcp-installer stop
 ```
+
+## First-Run Behavior
+
+1. First launch without config: installer enters initialization wizard and writes launcher profile.
+2. After initialization: installer can start backend and VCPChat in the same run.
+3. Subsequent launches: installer skips init and directly executes one-click start.
+4. Runtime control: use `status`, `stop`, and `reset`.
 
 ## Build Artifacts (Local First)
 
@@ -40,6 +51,7 @@ By default, local build outputs are generated in `dist/` and temporary AppImage 
 1. This baseline does not yet implement full component installation logic.
 2. AppImage build downloads `appimagetool` into `.local-build-env/tools/`.
 3. For headless mode, GUI-required steps must emit a structured block and exit non-zero.
+4. Default profile is user-level isolated (`~/.local/share/vcpinstallergui`) to reduce system environment pollution.
 
 ## Release Signature
 
