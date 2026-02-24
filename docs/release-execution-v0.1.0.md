@@ -35,13 +35,15 @@ Execute release checklist tasks as far as possible without repeatedly consuming 
 
 1. AppImage generation is blocked because installer executable/AppDir pipeline is not implemented.
 2. Installer startup and install-flow smoke tests are blocked because no runnable installer exists yet.
-3. Repository-level Actions permission `Read and write` check requires authenticated admin access.
-4. Post-release issue watch window requires manual owner assignment.
+3. Post-release issue watch window requires manual owner assignment.
 
 ## 5. Follow-Up (Next Release Baseline)
 
 1. Implement minimal installer executable entry and smoke test command.
 2. Add AppImage build pipeline for Linux executable release.
 3. Decide and enable artifact signing (`SHA256SUMS.sig`) strategy.
-4. Confirm repo Actions permission setting (`Read and write`) in GitHub settings.
-5. Assign issue tracker monitoring owner and observation duration.
+4. Assign issue tracker monitoring owner and observation duration.
+
+## 6. Manual Confirmations
+
+1. Repository-level Actions permission (`Read and write`) was confirmed enabled by repository owner on 2026-02-24.
