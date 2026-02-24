@@ -5,3 +5,9 @@ tmp/
 
 # Local build outputs
 dist/
+
+# Local isolated build environments (do not track)
+.local-build-env/
+.release-build-env/
+.venv-release/
+build-cache/
