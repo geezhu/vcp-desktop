@@ -2,3 +2,6 @@
 TASK-COMMIT-PUSH-RULE.md
 docs/linux-aio-design.md
 tmp/
+
+# Local build outputs
+dist/
