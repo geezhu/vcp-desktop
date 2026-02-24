@@ -34,9 +34,10 @@ chmod +x bin/vcp-installer scripts/*.sh
 ## First-Run Behavior
 
 1. First launch without config: installer enters initialization wizard and writes launcher profile.
-2. After initialization: installer can start backend and VCPChat in the same run.
-3. Subsequent launches: installer skips init and directly executes one-click start.
-4. Runtime control: use `status`, `stop`, and `reset`.
+2. During `init`, installer can bootstrap a private runtime under user scope (portable mode).
+3. After initialization: installer can start backend and VCPChat in the same run.
+4. Subsequent launches: installer skips init and directly executes one-click start.
+5. Runtime control: use `status`, `stop`, and `reset`.
 
 ## Build Artifacts (Local First)
 
@@ -62,6 +63,19 @@ By default, local build outputs are generated in `dist/` and temporary AppImage 
 1. `VCPToolBox/config.env` is generated from template and patched with minimal runnable keys.
 2. `VCPChat/AppData/settings.json` is generated with minimal connection settings.
 3. Install reports are exported to `~/.local/share/vcpinstallergui/reports/` (or `VCP_INSTALLER_HOME` override).
+
+## Portable Runtime Strategy
+
+1. Confirmed default strategy: bootstrap dependencies in a private runtime during initialization.
+2. Default mode avoids global package installation and avoids modifying system PATH.
+3. Runtime artifacts are expected under installer user scope and should be removable as a whole.
+
+## Design Docs
+
+1. Requirements: `docs/requirements-design.md`
+2. Linux AIO design: `docs/linux-aio-design.md`
+3. Portable runtime design: `docs/portable-runtime-design.md`
+4. Portable runtime task list: `docs/portable-runtime-task-list.md`
 
 ## Release Signature
 

@@ -12,6 +12,10 @@ All notable changes to this project will be documented in this file.
 - New installer options for components, config overrides, and dependency-install toggles.
 - Optional plugin dependency mode for `Plugin/**/requirements.txt` installation.
 - Smoke coverage for install flow (config generation + report generation assertions).
+- Confirmed portable-runtime direction: bootstrap private runtime during `init` by default.
+- Added portable-runtime design/task documentation for phased execution.
+- Synced Linux AIO design with FR-010 portable runtime state machine and acceptance constraints.
+- Expanded portable runtime task breakdown with explicit implementation and release gates.
 
 ### Changed
 
