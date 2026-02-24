@@ -21,6 +21,22 @@ AUTO_APPROVE=0
 SIMULATE_GUI_STEP=0
 NO_START_AFTER_INIT=0
 STARTUP_DELAY="2"
+START_AFTER_INSTALL=0
+SKIP_NODE_INSTALL=0
+SKIP_PYTHON_INSTALL=0
+FORCE_CONFIG_REWRITE=0
+INSTALL_COMPONENTS_ARG="all"
+
+VCP_API_URL_ARG="${VCP_API_URL:-}"
+VCP_API_KEY_ARG="${VCP_API_KEY:-}"
+VCP_PORT_ARG="${VCP_PORT:-}"
+VCP_KEY_ARG="${VCP_KEY:-}"
+ADMIN_USER_ARG="${VCP_ADMIN_USER:-}"
+ADMIN_PASSWORD_ARG="${VCP_ADMIN_PASSWORD:-}"
+CHAT_SERVER_URL_ARG="${VCP_CHAT_SERVER_URL:-}"
+CHAT_API_KEY_ARG="${VCP_CHAT_API_KEY:-}"
+CHAT_LOG_URL_ARG="${VCP_CHAT_LOG_URL:-}"
+CHAT_LOG_KEY_ARG="${VCP_CHAT_LOG_KEY:-}"
 
 WORKSPACE_ROOT_ARG=""
 BACKEND_CWD_ARG=""
@@ -37,6 +53,16 @@ CHAT_CMD_VAL=""
 COMMAND="auto"
 SESSION_ID=""
 SESSION_FILE=""
+REPORT_DIR=""
+INSTALL_REPORT_JSON=""
+INSTALL_REPORT_MD=""
+
+INSTALL_STATUS="success"
+INSTALL_WARNINGS=()
+INSTALL_ERRORS=()
+INSTALL_STEPS=()
+INSTALL_TOOLBOX_ENABLED=1
+INSTALL_CHAT_ENABLED=1
 
 resolve_installer_home() {
   if [ -n "${VCP_INSTALLER_HOME:-}" ]; then
@@ -88,8 +114,8 @@ Commands:
   stop                    Stop backend and VCPChat started by installer
   status                  Show launcher and process status
   reset                   Remove saved launcher config and runtime state
-  install                 Run minimal install baseline flow (legacy)
-  resume                  Resume previous install baseline session (legacy)
+  install                 Run component install/configuration flow
+  resume                  Resume previous install session (state-based)
 
 Options:
   --cli                   Force CLI mode
@@ -101,6 +127,21 @@ Options:
   --simulate-gui-step     Simulate a GUI required step (for testing)
   --no-start-after-init   Initialize only, do not auto-start services
   --workspace-root <dir>  Workspace root path (for init)
+  --components <value>    Install targets: all|toolbox|chat|toolbox,chat
+  --skip-node-install     Skip npm dependency installation
+  --skip-python-install   Skip pip dependency installation
+  --overwrite-config      Rewrite generated config files if already present
+  --start-after-install   Start backend/chat after install flow
+  --vcp-api-url <url>     Value for VCPToolBox API_URL
+  --vcp-api-key <key>     Value for VCPToolBox API_Key
+  --vcp-port <port>       Value for VCPToolBox PORT (default 6005)
+  --vcp-key <key>         Value for VCPToolBox VCP_Key
+  --admin-user <name>     Value for VCPToolBox AdminUsername
+  --admin-password <pwd>  Value for VCPToolBox AdminPassword
+  --chat-server-url <url> Value for VCPChat settings.vcpServerUrl
+  --chat-api-key <key>    Value for VCPChat settings.vcpApiKey
+  --chat-log-url <url>    Value for VCPChat settings.vcpLogUrl
+  --chat-log-key <key>    Value for VCPChat settings.vcpLogKey
   --backend-cwd <dir>     Backend working directory
   --backend-cmd <cmd>     Backend startup command
   --chat-cwd <dir>        VCPChat working directory
@@ -111,8 +152,9 @@ Options:
 
 Examples:
   vcp-installer
+  vcp-installer install --cli --yes --components all
   vcp-installer init --gui
-  vcp-installer init --cli --yes --workspace-root ~/vcp --backend-cmd "npm run dev" --chat-cmd "npm run start"
+  vcp-installer init --cli --yes --workspace-root ~/vcp --backend-cmd "node server.js" --chat-cmd "npm run start"
   vcp-installer start
   vcp-installer stop
   vcp-installer status
@@ -209,6 +251,399 @@ detect_workspace_root() {
   printf '%s\n' "${ROOT_DIR}"
 }
 
+add_install_warning() {
+  local message="$1"
+  INSTALL_WARNINGS+=("${message}")
+  if [ "${INSTALL_STATUS}" != "failed" ]; then
+    INSTALL_STATUS="warning"
+  fi
+}
+
+add_install_error() {
+  local message="$1"
+  INSTALL_ERRORS+=("${message}")
+  INSTALL_STATUS="failed"
+}
+
+add_install_step() {
+  local step_id="$1"
+  local status="$2"
+  local detail="$3"
+  INSTALL_STEPS+=("${step_id}|${status}|${detail}")
+}
+
+json_escape() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/\\n}"
+  value="${value//$'\r'/\\r}"
+  value="${value//$'\t'/\\t}"
+  printf '%s' "${value}"
+}
+
+random_token() {
+  local size="${1:-24}"
+  local token
+  token="$(cat /proc/sys/kernel/random/uuid 2>/dev/null | tr -d '-')"
+  if [ -z "${token}" ]; then
+    token="$(date +%s%N)"
+  fi
+  printf '%s\n' "${token}" | cut -c1-"${size}"
+}
+
+upsert_env_value() {
+  local file_path="$1"
+  local key="$2"
+  local value="$3"
+  local tmp_file="${file_path}.tmp.$$"
+
+  awk -v k="${key}" -v v="${value}" '
+    BEGIN { replaced = 0 }
+    $0 ~ ("^" k "=") { print k "=" v; replaced = 1; next }
+    { print }
+    END { if (replaced == 0) print k "=" v }
+  ' "${file_path}" > "${tmp_file}"
+
+  mv "${tmp_file}" "${file_path}"
+}
+
+run_step_command() {
+  local step_id="$1"
+  local workdir="$2"
+  local command="$3"
+
+  log INFO "${step_id}: ${command}"
+  log INFO "${step_id}: cwd=${workdir}"
+
+  if [ "${DRY_RUN}" -eq 1 ]; then
+    log INFO "${step_id}: dry-run, skipped command"
+    return 0
+  fi
+
+  (
+    cd "${workdir}"
+    bash -lc "${command}"
+  )
+}
+
+parse_install_components() {
+  local normalized
+  local token
+
+  INSTALL_TOOLBOX_ENABLED=0
+  INSTALL_CHAT_ENABLED=0
+
+  normalized="$(printf '%s' "${INSTALL_COMPONENTS_ARG}" | tr ',' ' ' | tr '[:upper:]' '[:lower:]')"
+
+  if [ -z "${normalized// /}" ] || [ "${normalized}" = "all" ]; then
+    INSTALL_TOOLBOX_ENABLED=1
+    INSTALL_CHAT_ENABLED=1
+    return 0
+  fi
+
+  for token in ${normalized}; do
+    case "${token}" in
+      all)
+        INSTALL_TOOLBOX_ENABLED=1
+        INSTALL_CHAT_ENABLED=1
+        ;;
+      toolbox|vcptoolbox|backend)
+        INSTALL_TOOLBOX_ENABLED=1
+        ;;
+      chat|vcpchat|frontend)
+        INSTALL_CHAT_ENABLED=1
+        ;;
+      *)
+        echo "Invalid --components value: ${INSTALL_COMPONENTS_ARG}" >&2
+        echo "Supported values: all | toolbox | chat | toolbox,chat" >&2
+        return 1
+        ;;
+    esac
+  done
+
+  if [ "${INSTALL_TOOLBOX_ENABLED}" -eq 0 ] && [ "${INSTALL_CHAT_ENABLED}" -eq 0 ]; then
+    echo "No install component selected." >&2
+    return 1
+  fi
+
+  return 0
+}
+
+setup_vcptoolbox_config() {
+  local toolbox_dir="$1"
+  local chat_dir="$2"
+  local config_file="${toolbox_dir}/config.env"
+  local config_example="${toolbox_dir}/config.env.example"
+  local api_url="${VCP_API_URL_ARG:-http://127.0.0.1:3000}"
+  local api_key="${VCP_API_KEY_ARG:-sk-change-me}"
+  local vcp_port="${VCP_PORT_ARG:-6005}"
+  local admin_user="${ADMIN_USER_ARG:-admin}"
+  local admin_password="${ADMIN_PASSWORD_ARG:-$(random_token 20)}"
+  local service_key
+  local image_key
+  local file_key
+  local vcp_key
+  local callback_url
+
+  service_key="Key_$(random_token 16)"
+  image_key="Images_$(random_token 12)"
+  file_key="$(random_token 12)"
+  vcp_key="${VCP_KEY_ARG:-$(random_token 24)}"
+  callback_url="http://127.0.0.1:${vcp_port}/plugin-callback"
+
+  if [ -f "${config_file}" ] && [ "${FORCE_CONFIG_REWRITE}" -eq 0 ]; then
+    log INFO "VCPToolBox config exists, keeping current file: ${config_file}"
+  else
+    if [ "${DRY_RUN}" -eq 1 ]; then
+      log INFO "Dry-run: would create/update ${config_file}"
+    else
+      if [ -f "${config_example}" ]; then
+        cp "${config_example}" "${config_file}"
+      else
+        cat > "${config_file}" <<'EOF'
+API_Key=sk-change-me
+API_URL=http://127.0.0.1:3000
+PORT=6005
+Key=change-me
+Image_Key=Images_change_me
+File_Key=change_me
+VCP_Key=change-me
+AdminUsername=admin
+AdminPassword=change-me
+CALLBACK_BASE_URL=http://127.0.0.1:6005/plugin-callback
+EOF
+      fi
+    fi
+  fi
+
+  if [ "${DRY_RUN}" -eq 0 ] && [ -f "${config_file}" ]; then
+    upsert_env_value "${config_file}" "API_URL" "${api_url}"
+    upsert_env_value "${config_file}" "API_Key" "${api_key}"
+    upsert_env_value "${config_file}" "PORT" "${vcp_port}"
+    upsert_env_value "${config_file}" "Key" "${service_key}"
+    upsert_env_value "${config_file}" "Image_Key" "${image_key}"
+    upsert_env_value "${config_file}" "File_Key" "${file_key}"
+    upsert_env_value "${config_file}" "VCP_Key" "${vcp_key}"
+    upsert_env_value "${config_file}" "AdminUsername" "${admin_user}"
+    upsert_env_value "${config_file}" "AdminPassword" "${admin_password}"
+    upsert_env_value "${config_file}" "CALLBACK_BASE_URL" "${callback_url}"
+    upsert_env_value "${config_file}" "VarVchatPath" "${chat_dir}"
+    chmod 600 "${config_file}" || true
+  fi
+
+  if [ "${DRY_RUN}" -eq 0 ]; then
+    mkdir -p \
+      "${toolbox_dir}/VCPTimedContacts" \
+      "${toolbox_dir}/dailynote" \
+      "${toolbox_dir}/image" \
+      "${toolbox_dir}/file" \
+      "${toolbox_dir}/TVStxt" \
+      "${toolbox_dir}/VCPAsyncResults" \
+      "${toolbox_dir}/Plugin/VCPLog/log" \
+      "${toolbox_dir}/Plugin/EmojiListGenerator/generated_lists" \
+      "${toolbox_dir}/VectorStore"
+  else
+    log INFO "Dry-run: would create VCPToolBox runtime directories"
+  fi
+}
+
+setup_vcpchat_config() {
+  local chat_dir="$1"
+  local toolbox_dir="$2"
+  local api_port="${VCP_PORT_ARG:-6005}"
+  local settings_dir="${chat_dir}/AppData"
+  local settings_file="${settings_dir}/settings.json"
+  local server_url="${CHAT_SERVER_URL_ARG:-http://127.0.0.1:${api_port}/v1/chat/completions}"
+  local api_key="${CHAT_API_KEY_ARG:-${VCP_API_KEY_ARG:-sk-change-me}}"
+  local log_url="${CHAT_LOG_URL_ARG:-http://127.0.0.1:${api_port}}"
+  local log_key="${CHAT_LOG_KEY_ARG:-${VCP_KEY_ARG:-$(random_token 20)}}"
+
+  if [ "${DRY_RUN}" -eq 0 ]; then
+    mkdir -p \
+      "${settings_dir}" \
+      "${settings_dir}/Agents" \
+      "${settings_dir}/UserData" \
+      "${settings_dir}/UserData/attachments" \
+      "${settings_dir}/Notemodules" \
+      "${settings_dir}/file" \
+      "${settings_dir}/canvas"
+  else
+    log INFO "Dry-run: would create VCPChat AppData directories under ${settings_dir}"
+  fi
+
+  if [ -f "${settings_file}" ] && [ "${FORCE_CONFIG_REWRITE}" -eq 0 ]; then
+    log INFO "VCPChat settings exists, keeping current file: ${settings_file}"
+    return
+  fi
+
+  if [ "${DRY_RUN}" -eq 1 ]; then
+    log INFO "Dry-run: would generate ${settings_file}"
+    return
+  fi
+
+  cat > "${settings_file}" <<EOF
+{
+  "sidebarWidth": 260,
+  "notificationsSidebarWidth": 300,
+  "userName": "用户",
+  "vcpServerUrl": "$(json_escape "${server_url}")",
+  "vcpApiKey": "$(json_escape "${api_key}")",
+  "vcpLogUrl": "$(json_escape "${log_url}")",
+  "vcpLogKey": "$(json_escape "${log_key}")",
+  "networkNotesPaths": [],
+  "enableAgentBubbleTheme": false,
+  "enableSmoothStreaming": false,
+  "minChunkBufferSize": 1,
+  "smoothStreamIntervalMs": 25,
+  "assistantAgent": "",
+  "enableDistributedServer": true,
+  "agentMusicControl": false,
+  "enableDistributedServerLogs": false,
+  "enableVcpToolInjection": false,
+  "lastOpenItemId": null,
+  "lastOpenItemType": null,
+  "lastOpenTopicId": null,
+  "combinedItemOrder": [],
+  "agentOrder": [],
+  "vcpToolBoxPath": "$(json_escape "${toolbox_dir}")"
+}
+EOF
+}
+
+install_component_dependencies() {
+  local component_name="$1"
+  local component_dir="$2"
+
+  if [ "${SKIP_NODE_INSTALL}" -eq 0 ] && [ -f "${component_dir}/package.json" ]; then
+    run_step_command "S40_${component_name}_NODE" "${component_dir}" "npm install --no-audit --no-fund"
+  else
+    add_install_warning "${component_name}: node install skipped"
+    log WARN "${component_name}: node install skipped"
+  fi
+
+  if [ "${SKIP_PYTHON_INSTALL}" -eq 0 ] && [ -f "${component_dir}/requirements.txt" ]; then
+    if command -v pip3 >/dev/null 2>&1; then
+      run_step_command "S41_${component_name}_PY" "${component_dir}" "pip3 install -r requirements.txt"
+    elif command -v python3 >/dev/null 2>&1; then
+      run_step_command "S41_${component_name}_PY" "${component_dir}" "python3 -m pip install -r requirements.txt"
+    else
+      add_install_warning "${component_name}: python dependency install skipped (pip/python3 not found)"
+      log WARN "${component_name}: python dependency install skipped (pip/python3 not found)"
+    fi
+  elif [ "${SKIP_PYTHON_INSTALL}" -eq 1 ]; then
+    add_install_warning "${component_name}: python install skipped by flag"
+    log WARN "${component_name}: python install skipped by flag"
+  fi
+}
+
+write_install_report() {
+  local workspace_root="$1"
+  local toolbox_dir="$2"
+  local chat_dir="$3"
+  local now_iso
+  local idx
+  local step_row
+  local step_id
+  local step_status
+  local step_detail
+
+  now_iso="$(timestamp)"
+  REPORT_DIR="${INSTALLER_HOME}/reports"
+  INSTALL_REPORT_JSON="${REPORT_DIR}/install-report-${SESSION_ID}.json"
+  INSTALL_REPORT_MD="${REPORT_DIR}/install-report-${SESSION_ID}.md"
+
+  if [ "${DRY_RUN}" -eq 1 ]; then
+    log INFO "Dry-run: would write install reports to ${REPORT_DIR}"
+    return
+  fi
+
+  mkdir -p "${REPORT_DIR}"
+
+  {
+    printf '{\n'
+    printf '  "session_id": "%s",\n' "$(json_escape "${SESSION_ID}")"
+    printf '  "generated_at": "%s",\n' "$(json_escape "${now_iso}")"
+    printf '  "status": "%s",\n' "$(json_escape "${INSTALL_STATUS}")"
+    printf '  "workspace_root": "%s",\n' "$(json_escape "${workspace_root}")"
+    printf '  "toolbox_dir": "%s",\n' "$(json_escape "${toolbox_dir}")"
+    printf '  "chat_dir": "%s",\n' "$(json_escape "${chat_dir}")"
+    printf '  "warnings": [\n'
+    for idx in "${!INSTALL_WARNINGS[@]}"; do
+      printf '    "%s"' "$(json_escape "${INSTALL_WARNINGS[$idx]}")"
+      if [ "${idx}" -lt "$((${#INSTALL_WARNINGS[@]} - 1))" ]; then
+        printf ','
+      fi
+      printf '\n'
+    done
+    printf '  ],\n'
+    printf '  "errors": [\n'
+    for idx in "${!INSTALL_ERRORS[@]}"; do
+      printf '    "%s"' "$(json_escape "${INSTALL_ERRORS[$idx]}")"
+      if [ "${idx}" -lt "$((${#INSTALL_ERRORS[@]} - 1))" ]; then
+        printf ','
+      fi
+      printf '\n'
+    done
+    printf '  ],\n'
+    printf '  "steps": [\n'
+    for idx in "${!INSTALL_STEPS[@]}"; do
+      step_row="${INSTALL_STEPS[$idx]}"
+      step_id="${step_row%%|*}"
+      step_row="${step_row#*|}"
+      step_status="${step_row%%|*}"
+      step_detail="${step_row#*|}"
+      printf '    {"step_id":"%s","status":"%s","detail":"%s"}' \
+        "$(json_escape "${step_id}")" \
+        "$(json_escape "${step_status}")" \
+        "$(json_escape "${step_detail}")"
+      if [ "${idx}" -lt "$((${#INSTALL_STEPS[@]} - 1))" ]; then
+        printf ','
+      fi
+      printf '\n'
+    done
+    printf '  ]\n'
+    printf '}\n'
+  } > "${INSTALL_REPORT_JSON}"
+
+  {
+    printf '# Install Report\n\n'
+    printf -- '- Session: `%s`\n' "${SESSION_ID}"
+    printf -- '- Generated At (UTC): `%s`\n' "${now_iso}"
+    printf -- '- Status: `%s`\n' "${INSTALL_STATUS}"
+    printf -- '- Workspace: `%s`\n' "${workspace_root}"
+    printf -- '- VCPToolBox: `%s`\n' "${toolbox_dir}"
+    printf -- '- VCPChat: `%s`\n' "${chat_dir}"
+    printf '\n## Steps\n\n'
+    for step_row in "${INSTALL_STEPS[@]}"; do
+      step_id="${step_row%%|*}"
+      step_row="${step_row#*|}"
+      step_status="${step_row%%|*}"
+      step_detail="${step_row#*|}"
+      printf -- '- `%s` `%s` %s\n' "${step_id}" "${step_status}" "${step_detail}"
+    done
+    printf '\n## Warnings\n\n'
+    if [ "${#INSTALL_WARNINGS[@]}" -eq 0 ]; then
+      printf -- '- none\n'
+    else
+      for step_row in "${INSTALL_WARNINGS[@]}"; do
+        printf -- '- %s\n' "${step_row}"
+      done
+    fi
+    printf '\n## Errors\n\n'
+    if [ "${#INSTALL_ERRORS[@]}" -eq 0 ]; then
+      printf -- '- none\n'
+    else
+      for step_row in "${INSTALL_ERRORS[@]}"; do
+        printf -- '- %s\n' "${step_row}"
+      done
+    fi
+  } > "${INSTALL_REPORT_MD}"
+
+  log INFO "Install report JSON: ${INSTALL_REPORT_JSON}"
+  log INFO "Install report Markdown: ${INSTALL_REPORT_MD}"
+}
+
 save_launcher_config() {
   local workspace_root="$1"
   local backend_cwd="$2"
@@ -275,7 +710,7 @@ collect_init_values() {
 
   default_workspace="$(detect_workspace_root)"
   default_backend_cwd="${default_workspace}/VCPToolBox"
-  default_backend_cmd="npm run start"
+  default_backend_cmd="node server.js"
   default_chat_cwd="${default_workspace}/VCPChat"
   default_chat_cmd="npm run start"
 
@@ -331,6 +766,17 @@ collect_init_values() {
 validate_startup_delay() {
   if ! printf '%s' "${STARTUP_DELAY}" | grep -Eq '^[0-9]+$'; then
     echo "Invalid --startup-delay: ${STARTUP_DELAY}" >&2
+    exit 2
+  fi
+}
+
+validate_vcp_port() {
+  if [ -z "${VCP_PORT_ARG}" ]; then
+    return
+  fi
+
+  if ! printf '%s' "${VCP_PORT_ARG}" | grep -Eq '^[0-9]+$'; then
+    echo "Invalid --vcp-port: ${VCP_PORT_ARG}" >&2
     exit 2
   fi
 }
@@ -436,8 +882,18 @@ show_component_status() {
   fi
 }
 
-run_flow() {
+run_install_flow() {
   local session_file="$1"
+  local workspace_root
+  local toolbox_dir
+  local chat_dir
+  local backend_cmd
+  local chat_cmd
+
+  INSTALL_STATUS="success"
+  INSTALL_WARNINGS=()
+  INSTALL_ERRORS=()
+  INSTALL_STEPS=()
 
   write_state "${session_file}" "S00_PRECHECK" "running" "precheck-started"
   log INFO "Step S00_PRECHECK: validating runtime dependencies"
@@ -445,12 +901,30 @@ run_flow() {
   require_cmd_or_warn node
   require_cmd_or_warn npm
   require_cmd_or_warn python3
+  add_install_step "S00_PRECHECK" "success" "runtime dependency check finished"
+
+  if ! parse_install_components; then
+    write_state "${session_file}" "S05_COMPONENTS" "failed" "invalid-component-selection"
+    exit 2
+  fi
+
+  write_state "${session_file}" "S05_COMPONENTS" "running" "component-selection"
+  add_install_step \
+    "S05_COMPONENTS" \
+    "success" \
+    "toolbox=${INSTALL_TOOLBOX_ENABLED},chat=${INSTALL_CHAT_ENABLED}"
+
+  workspace_root="$(detect_workspace_root)"
+  toolbox_dir="${workspace_root}/VCPToolBox"
+  chat_dir="${workspace_root}/VCPChat"
 
   write_state "${session_file}" "S10_WORKSPACE" "running" "workspace-detection"
-  log INFO "Step S10_WORKSPACE: root path ${ROOT_DIR}"
+  log INFO "Step S10_WORKSPACE: workspace root ${workspace_root}"
+  add_install_step "S10_WORKSPACE" "success" "workspace=${workspace_root}"
 
   if [ "${SIMULATE_GUI_STEP}" -eq 1 ]; then
     write_state "${session_file}" "S45_GUI_REQUIRED" "blocked" "gui-required-step"
+    add_install_step "S45_GUI_REQUIRED" "blocked" "simulated gui-required step"
     if [ "${HEADLESS}" -eq 1 ]; then
       emit_gui_required_block
       exit 30
@@ -463,16 +937,92 @@ run_flow() {
     fi
   fi
 
-  write_state "${session_file}" "S50_INSTALL" "running" "install-orchestration"
-  if [ "${DRY_RUN}" -eq 1 ]; then
-    log INFO "Step S50_INSTALL: dry-run enabled, no changes will be made."
-  else
-    log INFO "Step S50_INSTALL: minimal baseline implementation (no component mutation yet)."
+  if [ "${INSTALL_TOOLBOX_ENABLED}" -eq 1 ]; then
+    write_state "${session_file}" "S50_TOOLBOX" "running" "installing-vcptoolbox"
+    if [ ! -d "${toolbox_dir}" ]; then
+      if [ "${DRY_RUN}" -eq 1 ]; then
+        add_install_warning "VCPToolBox directory not found (dry-run): ${toolbox_dir}"
+        add_install_step "S50_TOOLBOX" "warning" "missing directory in dry-run"
+      else
+        add_install_error "VCPToolBox directory not found: ${toolbox_dir}"
+        add_install_step "S50_TOOLBOX" "failed" "missing directory"
+      fi
+    else
+      if install_component_dependencies "TOOLBOX" "${toolbox_dir}"; then
+        setup_vcptoolbox_config "${toolbox_dir}" "${chat_dir}"
+        if [ "${DRY_RUN}" -eq 1 ] || [ -f "${toolbox_dir}/config.env" ]; then
+          add_install_step "S50_TOOLBOX" "success" "dependency/config completed"
+        else
+          add_install_error "VCPToolBox config generation failed: ${toolbox_dir}/config.env"
+          add_install_step "S50_TOOLBOX" "failed" "config file missing"
+        fi
+      else
+        add_install_error "VCPToolBox dependency installation failed"
+        add_install_step "S50_TOOLBOX" "failed" "dependency install failed"
+      fi
+    fi
   fi
 
-  write_state "${session_file}" "S70_REPORT" "success" "completed"
-  log INFO "Step S70_REPORT: flow completed successfully"
-  log INFO "State file: ${session_file}"
+  if [ "${INSTALL_CHAT_ENABLED}" -eq 1 ]; then
+    write_state "${session_file}" "S51_CHAT" "running" "installing-vcpchat"
+    if [ ! -d "${chat_dir}" ]; then
+      if [ "${DRY_RUN}" -eq 1 ]; then
+        add_install_warning "VCPChat directory not found (dry-run): ${chat_dir}"
+        add_install_step "S51_CHAT" "warning" "missing directory in dry-run"
+      else
+        add_install_error "VCPChat directory not found: ${chat_dir}"
+        add_install_step "S51_CHAT" "failed" "missing directory"
+      fi
+    else
+      if install_component_dependencies "CHAT" "${chat_dir}"; then
+        setup_vcpchat_config "${chat_dir}" "${toolbox_dir}"
+        if [ "${DRY_RUN}" -eq 1 ] || [ -f "${chat_dir}/AppData/settings.json" ]; then
+          add_install_step "S51_CHAT" "success" "dependency/config completed"
+        else
+          add_install_error "VCPChat settings generation failed: ${chat_dir}/AppData/settings.json"
+          add_install_step "S51_CHAT" "failed" "settings file missing"
+        fi
+      else
+        add_install_error "VCPChat dependency installation failed"
+        add_install_step "S51_CHAT" "failed" "dependency install failed"
+      fi
+    fi
+  fi
+
+  write_state "${session_file}" "S70_REPORT" "running" "report-generation"
+  write_install_report "${workspace_root}" "${toolbox_dir}" "${chat_dir}"
+
+  if [ "${START_AFTER_INSTALL}" -eq 1 ] && [ "${INSTALL_STATUS}" != "failed" ]; then
+    backend_cmd="${BACKEND_CMD_ARG:-node server.js}"
+    chat_cmd="${CHAT_CMD_ARG:-npm run start}"
+    save_launcher_config \
+      "${workspace_root}" \
+      "${toolbox_dir}" \
+      "${backend_cmd}" \
+      "${chat_dir}" \
+      "${chat_cmd}" \
+      "${STARTUP_DELAY}"
+    if [ "${DRY_RUN}" -eq 1 ]; then
+      add_install_step "S80_START_STACK" "warning" "dry-run skipped stack startup"
+    else
+      run_start_stack
+      add_install_step "S80_START_STACK" "success" "stack startup executed"
+    fi
+  fi
+
+  if [ "${INSTALL_STATUS}" = "failed" ]; then
+    write_state "${session_file}" "S90_DONE" "failed" "install-failed"
+    log ERROR "Install flow completed with errors."
+    exit 24
+  fi
+
+  if [ "${INSTALL_STATUS}" = "warning" ]; then
+    write_state "${session_file}" "S90_DONE" "warning" "install-completed-with-warnings"
+    log WARN "Install flow completed with warnings."
+  else
+    write_state "${session_file}" "S90_DONE" "success" "install-completed"
+    log INFO "Install flow completed successfully."
+  fi
 }
 
 run_init() {
@@ -602,6 +1152,66 @@ while [ $# -gt 0 ]; do
       WORKSPACE_ROOT_ARG="${2:-}"
       shift 2
       ;;
+    --components)
+      INSTALL_COMPONENTS_ARG="${2:-}"
+      shift 2
+      ;;
+    --skip-node-install)
+      SKIP_NODE_INSTALL=1
+      shift
+      ;;
+    --skip-python-install)
+      SKIP_PYTHON_INSTALL=1
+      shift
+      ;;
+    --overwrite-config)
+      FORCE_CONFIG_REWRITE=1
+      shift
+      ;;
+    --start-after-install)
+      START_AFTER_INSTALL=1
+      shift
+      ;;
+    --vcp-api-url)
+      VCP_API_URL_ARG="${2:-}"
+      shift 2
+      ;;
+    --vcp-api-key)
+      VCP_API_KEY_ARG="${2:-}"
+      shift 2
+      ;;
+    --vcp-port)
+      VCP_PORT_ARG="${2:-}"
+      shift 2
+      ;;
+    --vcp-key)
+      VCP_KEY_ARG="${2:-}"
+      shift 2
+      ;;
+    --admin-user)
+      ADMIN_USER_ARG="${2:-}"
+      shift 2
+      ;;
+    --admin-password)
+      ADMIN_PASSWORD_ARG="${2:-}"
+      shift 2
+      ;;
+    --chat-server-url)
+      CHAT_SERVER_URL_ARG="${2:-}"
+      shift 2
+      ;;
+    --chat-api-key)
+      CHAT_API_KEY_ARG="${2:-}"
+      shift 2
+      ;;
+    --chat-log-url)
+      CHAT_LOG_URL_ARG="${2:-}"
+      shift 2
+      ;;
+    --chat-log-key)
+      CHAT_LOG_KEY_ARG="${2:-}"
+      shift 2
+      ;;
     --backend-cwd)
       BACKEND_CWD_ARG="${2:-}"
       shift 2
@@ -657,6 +1267,8 @@ if [ "${HEADLESS}" -eq 1 ]; then
   MODE="cli"
 fi
 
+validate_vcp_port
+
 if [ "${COMMAND}" = "auto" ]; then
   if [ "${DRY_RUN}" -eq 1 ] || [ "${SIMULATE_GUI_STEP}" -eq 1 ]; then
     COMMAND="install"
@@ -691,7 +1303,7 @@ log INFO "Mode: ${MODE} (headless=${HEADLESS}, dry_run=${DRY_RUN}, command=${COM
 
 case "${COMMAND}" in
   install|resume)
-    run_flow "${SESSION_FILE}"
+    run_install_flow "${SESSION_FILE}"
     ;;
   init)
     run_init

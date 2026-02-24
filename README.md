@@ -20,10 +20,11 @@ chmod +x bin/vcp-installer scripts/*.sh
 
 ```bash
 ./bin/vcp-installer --help
+./bin/vcp-installer install --cli --yes --components all --workspace-root ~/vcp
 ./bin/vcp-installer --cli --dry-run
 ./bin/vcp-installer resume --cli --dry-run
 ./bin/vcp-installer --headless --dry-run --simulate-gui-step
-./bin/vcp-installer init --cli --yes --workspace-root ~/vcp --backend-cmd "npm run start" --chat-cmd "npm run start"
+./bin/vcp-installer init --cli --yes --workspace-root ~/vcp --backend-cmd "node server.js" --chat-cmd "npm run start"
 ./bin/vcp-installer start
 ./bin/vcp-installer status
 ./bin/vcp-installer stop
@@ -48,10 +49,16 @@ By default, local build outputs are generated in `dist/` and temporary AppImage 
 
 ## Notes
 
-1. This baseline does not yet implement full component installation logic.
+1. Installer now covers minimal component install/config flow; full plugin/system dependency coverage remains incremental.
 2. AppImage build downloads `appimagetool` into `.local-build-env/tools/`.
 3. For headless mode, GUI-required steps must emit a structured block and exit non-zero.
 4. Default profile is user-level isolated (`~/.local/share/vcpinstallergui`) to reduce system environment pollution.
+
+## Installer Outputs
+
+1. `VCPToolBox/config.env` is generated from template and patched with minimal runnable keys.
+2. `VCPChat/AppData/settings.json` is generated with minimal connection settings.
+3. Install reports are exported to `~/.local/share/vcpinstallergui/reports/` (or `VCP_INSTALLER_HOME` override).
 
 ## Release Signature
 
