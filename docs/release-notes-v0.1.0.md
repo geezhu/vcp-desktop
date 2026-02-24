@@ -21,11 +21,10 @@ None.
 ## Known Limitations
 
 1. No executable installer implementation in repository yet.
-2. Build and packaging pipeline is not fully implemented.
-3. AppImage and tar.gz artifacts are planned, not generated in this release.
+2. AppImage build pipeline is not implemented yet.
+3. Published `tar.gz` is a documentation baseline package, not a runnable installer binary.
 
 ## Next Milestone
 
-1. Add CI workflow for release packaging and checksum generation.
-2. Implement minimal installer core for Linux baseline.
-
+1. Implement minimal installer core for Linux baseline.
+2. Add AppImage packaging and artifact signing for executable releases.

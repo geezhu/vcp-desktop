@@ -9,6 +9,7 @@ All notable changes to this project will be documented in this file.
 - Initial requirements document for installer scope and constraints.
 - Linux AIO design draft created as local working reference.
 - Release process checklist and local execution rule draft.
+- GitHub release workflow for tag-based packaging and publishing.
 
 ### Breaking Changes
 
@@ -17,5 +18,5 @@ All notable changes to this project will be documented in this file.
 ### Known Limitations
 
 - Installer implementation is not started yet (documentation-first phase).
-- AppImage/tar.gz artifacts are planned but not generated in this version.
-
+- No runnable installer binary is shipped in this version.
+- AppImage artifact is not generated in this version.
