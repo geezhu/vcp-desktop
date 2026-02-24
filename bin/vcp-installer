@@ -1,0 +1,236 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+VERSION="0.0.0-dev"
+
+for version_path in \
+  "${ROOT_DIR}/VERSION" \
+  "${SCRIPT_DIR}/../share/vcp-installer/VERSION"; do
+  if [ -f "${version_path}" ]; then
+    VERSION="$(tr -d '[:space:]' < "${version_path}")"
+    break
+  fi
+done
+
+MODE="auto"
+HEADLESS=0
+DRY_RUN=0
+AUTO_APPROVE=0
+SIMULATE_GUI_STEP=0
+COMMAND="install"
+
+timestamp() {
+  date -u +"%Y-%m-%dT%H:%M:%SZ"
+}
+
+log() {
+  local level="$1"
+  shift
+  printf '%s [%s] %s\n' "$(timestamp)" "${level}" "$*"
+}
+
+usage() {
+  cat <<'EOF'
+VCPInstallerGUI minimal installer
+
+Usage:
+  vcp-installer [resume] [options]
+
+Options:
+  --cli                   Force CLI mode
+  --gui                   Force GUI mode
+  --auto                  Auto detect mode (default)
+  --headless              Headless mode (CLI only)
+  --dry-run               Do not run mutation steps
+  --yes                   Non-interactive mode placeholder
+  --simulate-gui-step     Simulate a GUI required step (for testing)
+  --version               Print installer version
+  --help                  Print this help
+
+Examples:
+  vcp-installer --cli --dry-run
+  vcp-installer resume --cli --dry-run
+  vcp-installer --headless --simulate-gui-step
+EOF
+}
+
+require_cmd_or_warn() {
+  local cmd="$1"
+  if command -v "${cmd}" >/dev/null 2>&1; then
+    local line
+    line="$("${cmd}" --version 2>/dev/null | head -n 1 || true)"
+    if [ -n "${line}" ]; then
+      log INFO "Detected ${cmd}: ${line}"
+    else
+      log INFO "Detected ${cmd}"
+    fi
+  else
+    log WARN "Missing dependency: ${cmd}"
+  fi
+}
+
+emit_gui_required_block() {
+  cat <<EOF
+GUI_REQUIRED
+step_id: S45_GUI_REQUIRED
+reason: This step requires an interactive GUI action.
+user_action: Open GUI session and complete the required dialog.
+completion_criteria: GUI action finished and confirmed.
+resume_command: ${0} resume --cli
+EOF
+}
+
+write_state() {
+  local session_file="$1"
+  local step_id="$2"
+  local status="$3"
+  local detail="$4"
+  cat > "${session_file}" <<EOF
+{
+  "session_id": "${SESSION_ID}",
+  "mode": "${MODE}",
+  "headless": ${HEADLESS},
+  "dry_run": ${DRY_RUN},
+  "step_id": "${step_id}",
+  "status": "${status}",
+  "detail": "${detail}",
+  "updated_at": "$(timestamp)"
+}
+EOF
+}
+
+run_flow() {
+  local session_file="$1"
+
+  write_state "${session_file}" "S00_PRECHECK" "running" "precheck-started"
+  log INFO "Step S00_PRECHECK: validating runtime dependencies"
+  require_cmd_or_warn git
+  require_cmd_or_warn node
+  require_cmd_or_warn npm
+  require_cmd_or_warn python3
+
+  write_state "${session_file}" "S10_WORKSPACE" "running" "workspace-detection"
+  log INFO "Step S10_WORKSPACE: root path ${ROOT_DIR}"
+
+  if [ "${SIMULATE_GUI_STEP}" -eq 1 ]; then
+    write_state "${session_file}" "S45_GUI_REQUIRED" "blocked" "gui-required-step"
+    if [ "${HEADLESS}" -eq 1 ]; then
+      emit_gui_required_block
+      exit 30
+    fi
+
+    if [ "${MODE}" = "gui" ] && [ -n "${DISPLAY:-}" ] && command -v zenity >/dev/null 2>&1; then
+      zenity --info --title "VCP Installer" --text "GUI required step simulated. Click OK to continue." || true
+    else
+      log WARN "GUI required step simulated without zenity; continuing in non-interactive fallback."
+    fi
+  fi
+
+  write_state "${session_file}" "S50_INSTALL" "running" "install-orchestration"
+  if [ "${DRY_RUN}" -eq 1 ]; then
+    log INFO "Step S50_INSTALL: dry-run enabled, no changes will be made."
+  else
+    log INFO "Step S50_INSTALL: minimal baseline implementation (no component mutation yet)."
+  fi
+
+  write_state "${session_file}" "S70_REPORT" "success" "completed"
+  log INFO "Step S70_REPORT: flow completed successfully"
+  log INFO "State file: ${session_file}"
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    resume)
+      COMMAND="resume"
+      shift
+      ;;
+    --cli)
+      MODE="cli"
+      shift
+      ;;
+    --gui)
+      MODE="gui"
+      shift
+      ;;
+    --auto)
+      MODE="auto"
+      shift
+      ;;
+    --headless)
+      HEADLESS=1
+      shift
+      ;;
+    --dry-run)
+      DRY_RUN=1
+      shift
+      ;;
+    --yes|--non-interactive)
+      AUTO_APPROVE=1
+      shift
+      ;;
+    --simulate-gui-step)
+      SIMULATE_GUI_STEP=1
+      shift
+      ;;
+    --version)
+      echo "${VERSION}"
+      exit 0
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [ "${HEADLESS}" -eq 1 ] && [ "${MODE}" = "gui" ]; then
+  echo "Invalid arguments: --headless cannot be combined with --gui" >&2
+  exit 2
+fi
+
+if [ "${MODE}" = "auto" ]; then
+  if [ "${HEADLESS}" -eq 1 ]; then
+    MODE="cli"
+  elif [ -n "${DISPLAY:-}" ]; then
+    MODE="gui"
+  else
+    MODE="cli"
+  fi
+fi
+
+if [ "${HEADLESS}" -eq 1 ]; then
+  MODE="cli"
+fi
+
+STATE_DIR="${VCP_INSTALLER_STATE_DIR:-${ROOT_DIR}/state}"
+mkdir -p "${STATE_DIR}"
+
+if [ "${COMMAND}" = "resume" ]; then
+  latest_session="$(ls -1t "${STATE_DIR}"/session-*.json 2>/dev/null | head -n 1 || true)"
+  if [ -z "${latest_session}" ]; then
+    echo "No previous session found in ${STATE_DIR}" >&2
+    exit 3
+  fi
+  SESSION_FILE="${latest_session}"
+  SESSION_ID="$(basename "${SESSION_FILE}" .json)"
+  SESSION_ID="${SESSION_ID#session-}"
+  log INFO "Resuming session ${SESSION_ID}"
+else
+  SESSION_ID="${VCP_INSTALLER_SESSION_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
+  SESSION_FILE="${STATE_DIR}/session-${SESSION_ID}.json"
+  log INFO "Starting new session ${SESSION_ID}"
+fi
+
+if [ "${AUTO_APPROVE}" -eq 1 ]; then
+  log INFO "Non-interactive mode enabled."
+fi
+
+log INFO "Mode: ${MODE} (headless=${HEADLESS}, dry_run=${DRY_RUN})"
+run_flow "${SESSION_FILE}"

@@ -17,16 +17,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Prepare executable permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x bin/vcp-installer scripts/*.sh
+
+      - name: Smoke test installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/smoke-test.sh
+
       - name: Build release artifacts
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p dist
-          TAG="${GITHUB_REF_NAME:-v0.0.0}"
-          TAR_NAME="vcpinstaller-${TAG}-linux-x64.tar.gz"
-
-          tar -czf "dist/${TAR_NAME}" VERSION CHANGELOG.md docs/*.md
-          (cd dist && sha256sum "${TAR_NAME}" > SHA256SUMS)
+          ./scripts/build-tarball.sh
+          ./scripts/build-appimage.sh
+          ./scripts/verify-artifacts.sh
 
           echo "Generated artifacts:"
           ls -lh dist

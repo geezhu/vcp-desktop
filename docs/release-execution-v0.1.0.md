@@ -33,17 +33,28 @@ Execute release checklist tasks as far as possible without repeatedly consuming 
 
 ## 4. Blocked Items
 
-1. AppImage generation is blocked because installer executable/AppDir pipeline is not implemented.
-2. Installer startup and install-flow smoke tests are blocked because no runnable installer exists yet.
-3. Post-release issue watch window requires manual owner assignment.
+1. Existing published release `v0.1.0` is documentation-baseline only; executable artifacts require a new release tag.
+2. Post-release issue watch window requires manual owner assignment.
 
 ## 5. Follow-Up (Next Release Baseline)
 
-1. Implement minimal installer executable entry and smoke test command.
-2. Add AppImage build pipeline for Linux executable release.
-3. Decide and enable artifact signing (`SHA256SUMS.sig`) strategy.
-4. Assign issue tracker monitoring owner and observation duration.
+1. Decide and enable artifact signing (`SHA256SUMS.sig`) strategy.
+2. Assign issue tracker monitoring owner and observation duration.
 
 ## 6. Manual Confirmations
 
 1. Repository-level Actions permission (`Read and write`) was confirmed enabled by repository owner on 2026-02-24.
+
+## 7. Post-Release Local Remediation (2026-02-24)
+
+1. Implemented minimal installer executable entry: `bin/vcp-installer`.
+2. Added local smoke validation: `scripts/smoke-test.sh` (startup, resume, headless GUI-required).
+3. Added local packaging scripts:
+   - `scripts/build-tarball.sh`
+   - `scripts/build-appimage.sh`
+   - `scripts/update-sha256sums.sh`
+   - `scripts/verify-artifacts.sh`
+4. Built local executable artifacts and verified checksum:
+   - `dist/vcpinstaller-v0.1.0-linux-x64.tar.gz`
+   - `dist/vcpinstaller-v0.1.0-linux-x86_64.AppImage`
+   - `dist/SHA256SUMS`

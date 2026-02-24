@@ -5,6 +5,8 @@ tmp/
 
 # Local build outputs
 dist/
+build/
+state/
 
 # Local isolated build environments (do not track)
 .local-build-env/

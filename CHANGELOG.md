@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Added
+
+- Minimal installer executable entry at `bin/vcp-installer` with CLI/GUI mode flags.
+- Local smoke test script for startup, resume, and headless GUI-required behavior.
+- Local packaging scripts for `tar.gz`, `AppImage`, and `SHA256SUMS`.
+- Local artifact verification script for checksum and runnable extraction checks.
+- Repository README with local build and usage instructions.
+
+### Changed
+
+- Release workflow now runs smoke test and builds artifacts via local scripts.
+
 ## v0.1.0 - 2026-02-24
 
 ### Added
