@@ -1,4 +1,4 @@
-# VCPInstallerGUI Release Notes v0.1.1
+# VCPInstallerGUI Release Notes v0.1.2
 
 **Release Date**: 2026-02-24  
 **Release Owner**: openclaw
@@ -11,8 +11,8 @@ This release publishes the first executable Linux artifacts for the installer ba
 
 1. Minimal executable installer entry (`bin/vcp-installer`) with CLI/GUI mode support.
 2. Linux packaging outputs:
-   - `vcpinstaller-v0.1.1-linux-x64.tar.gz`
-   - `vcpinstaller-v0.1.1-linux-x86_64.AppImage`
+   - `vcpinstaller-v0.1.2-linux-x64.tar.gz`
+   - `vcpinstaller-v0.1.2-linux-x86_64.AppImage`
 3. Integrity and signing outputs:
    - `SHA256SUMS`
    - `SHA256SUMS.sig`

@@ -35,10 +35,18 @@ if [ "${headless_rc}" -ne 30 ]; then
   exit 1
 fi
 
-if ! rg -q "GUI_REQUIRED" "${TMP_DIR}/headless.log"; then
-  echo "Expected GUI_REQUIRED marker not found in headless log" >&2
-  cat "${TMP_DIR}/headless.log" >&2
-  exit 1
+if command -v rg >/dev/null 2>&1; then
+  if ! rg -q "GUI_REQUIRED" "${TMP_DIR}/headless.log"; then
+    echo "Expected GUI_REQUIRED marker not found in headless log" >&2
+    cat "${TMP_DIR}/headless.log" >&2
+    exit 1
+  fi
+else
+  if ! grep -q "GUI_REQUIRED" "${TMP_DIR}/headless.log"; then
+    echo "Expected GUI_REQUIRED marker not found in headless log" >&2
+    cat "${TMP_DIR}/headless.log" >&2
+    exit 1
+  fi
 fi
 
 echo "Smoke test passed."
