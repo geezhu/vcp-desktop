@@ -21,6 +21,7 @@ chmod +x bin/vcp-installer scripts/*.sh
 ```bash
 ./bin/vcp-installer --help
 ./bin/vcp-installer install --cli --yes --components all --workspace-root ~/vcp
+./bin/vcp-installer install --cli --yes --components toolbox --install-plugin-python-deps --strict-dependencies
 ./bin/vcp-installer --cli --dry-run
 ./bin/vcp-installer resume --cli --dry-run
 ./bin/vcp-installer --headless --dry-run --simulate-gui-step
@@ -53,6 +54,8 @@ By default, local build outputs are generated in `dist/` and temporary AppImage 
 2. AppImage build downloads `appimagetool` into `.local-build-env/tools/`.
 3. For headless mode, GUI-required steps must emit a structured block and exit non-zero.
 4. Default profile is user-level isolated (`~/.local/share/vcpinstallergui`) to reduce system environment pollution.
+5. Use `--install-plugin-python-deps` to include Plugin/**/requirements.txt install.
+6. Use `--strict-dependencies` to fail fast when required commands are missing.
 
 ## Installer Outputs
 

@@ -10,11 +10,13 @@ All notable changes to this project will be documented in this file.
 - Automatic generation of `VCPToolBox/config.env` (template-based patching) and `VCPChat/AppData/settings.json`.
 - Install report export (`JSON` + `Markdown`) under installer runtime home `reports/`.
 - New installer options for components, config overrides, and dependency-install toggles.
+- Optional plugin dependency mode for `Plugin/**/requirements.txt` installation.
 - Smoke coverage for install flow (config generation + report generation assertions).
 
 ### Changed
 
 - `init` default backend command now uses `node server.js` for VCPToolBox compatibility.
+- Dependency precheck now emits package-manager-aware install hints and supports strict failure mode.
 
 ## v0.1.2 - 2026-02-24
 

@@ -24,6 +24,8 @@ STARTUP_DELAY="2"
 START_AFTER_INSTALL=0
 SKIP_NODE_INSTALL=0
 SKIP_PYTHON_INSTALL=0
+INSTALL_PLUGIN_PYTHON_DEPS=0
+STRICT_DEPENDENCIES=0
 FORCE_CONFIG_REWRITE=0
 INSTALL_COMPONENTS_ARG="all"
 
@@ -130,6 +132,9 @@ Options:
   --components <value>    Install targets: all|toolbox|chat|toolbox,chat
   --skip-node-install     Skip npm dependency installation
   --skip-python-install   Skip pip dependency installation
+  --install-plugin-python-deps
+                           Install Plugin/**/requirements.txt for selected components
+  --strict-dependencies   Treat missing required commands as install errors
   --overwrite-config      Rewrite generated config files if already present
   --start-after-install   Start backend/chat after install flow
   --vcp-api-url <url>     Value for VCPToolBox API_URL
@@ -511,6 +516,138 @@ setup_vcpchat_config() {
 EOF
 }
 
+detect_package_manager() {
+  if command -v apt-get >/dev/null 2>&1; then
+    printf '%s\n' "apt"
+    return
+  fi
+  if command -v dnf >/dev/null 2>&1; then
+    printf '%s\n' "dnf"
+    return
+  fi
+  if command -v yum >/dev/null 2>&1; then
+    printf '%s\n' "yum"
+    return
+  fi
+  if command -v pacman >/dev/null 2>&1; then
+    printf '%s\n' "pacman"
+    return
+  fi
+  if command -v zypper >/dev/null 2>&1; then
+    printf '%s\n' "zypper"
+    return
+  fi
+  printf '%s\n' "unknown"
+}
+
+build_install_hint() {
+  local command_name="$1"
+  local manager="$2"
+  case "${manager}" in
+    apt)
+      printf '%s\n' "sudo apt-get update && sudo apt-get install -y ${command_name}"
+      ;;
+    dnf)
+      printf '%s\n' "sudo dnf install -y ${command_name}"
+      ;;
+    yum)
+      printf '%s\n' "sudo yum install -y ${command_name}"
+      ;;
+    pacman)
+      printf '%s\n' "sudo pacman -Sy --noconfirm ${command_name}"
+      ;;
+    zypper)
+      printf '%s\n' "sudo zypper install -y ${command_name}"
+      ;;
+    *)
+      printf '%s\n' "<package-manager> install ${command_name}"
+      ;;
+  esac
+}
+
+check_required_command() {
+  local command_name="$1"
+  local reason="$2"
+  local package_manager="$3"
+
+  if command -v "${command_name}" >/dev/null 2>&1; then
+    local line
+    line="$("${command_name}" --version 2>/dev/null | head -n 1 || true)"
+    if [ -n "${line}" ]; then
+      log INFO "Dependency ${command_name} detected: ${line}"
+    else
+      log INFO "Dependency ${command_name} detected"
+    fi
+    return 0
+  fi
+
+  local hint
+  local message
+  hint="$(build_install_hint "${command_name}" "${package_manager}")"
+  message="Missing command '${command_name}' (${reason}). Suggestion: ${hint}"
+
+  if [ "${STRICT_DEPENDENCIES}" -eq 1 ]; then
+    add_install_error "${message}"
+    log ERROR "${message}"
+  else
+    add_install_warning "${message}"
+    log WARN "${message}"
+  fi
+
+  return 1
+}
+
+install_plugin_python_requirements() {
+  local component_name="$1"
+  local component_dir="$2"
+  local plugin_root="${component_dir}/Plugin"
+  local req_file
+  local req_files=()
+  local req_dir
+  local rel_path
+
+  if [ ! -d "${plugin_root}" ]; then
+    log INFO "${component_name}: no Plugin directory detected, skip plugin python dependencies"
+    return 0
+  fi
+
+  while IFS= read -r -d '' req_file; do
+    req_files+=("${req_file}")
+  done < <(find "${plugin_root}" -type f -name requirements.txt -print0 2>/dev/null)
+
+  if [ "${#req_files[@]}" -eq 0 ]; then
+    log INFO "${component_name}: no plugin requirements.txt files found"
+    return 0
+  fi
+
+  log INFO "${component_name}: found ${#req_files[@]} plugin requirements file(s)"
+
+  if [ "${SKIP_PYTHON_INSTALL}" -eq 1 ]; then
+    add_install_warning "${component_name}: plugin python requirements skipped because --skip-python-install is enabled"
+    return 0
+  fi
+
+  for req_file in "${req_files[@]}"; do
+    req_dir="$(dirname "${req_file}")"
+    rel_path="${req_file#${component_dir}/}"
+    if [ "${DRY_RUN}" -eq 1 ]; then
+      log INFO "Dry-run: would install plugin python requirements from ${rel_path}"
+      continue
+    fi
+
+    if command -v pip3 >/dev/null 2>&1; then
+      run_step_command "S42_${component_name}_PLUGIN_PY" "${req_dir}" "pip3 install -r requirements.txt"
+    elif command -v python3 >/dev/null 2>&1; then
+      run_step_command "S42_${component_name}_PLUGIN_PY" "${req_dir}" "python3 -m pip install -r requirements.txt"
+    else
+      add_install_error "${component_name}: cannot install plugin python requirements because pip3/python3 is missing (${rel_path})"
+      return 1
+    fi
+  done
+
+  return 0
+}
+
 install_component_dependencies() {
   local component_name="$1"
   local component_dir="$2"
@@ -889,6 +1026,8 @@ run_install_flow() {
   local chat_dir
   local backend_cmd
   local chat_cmd
+  local package_manager
+  local precheck_status
 
   INSTALL_STATUS="success"
   INSTALL_WARNINGS=()
@@ -897,11 +1036,30 @@ run_install_flow() {
 
   write_state "${session_file}" "S00_PRECHECK" "running" "precheck-started"
   log INFO "Step S00_PRECHECK: validating runtime dependencies"
-  require_cmd_or_warn git
-  require_cmd_or_warn node
-  require_cmd_or_warn npm
-  require_cmd_or_warn python3
-  add_install_step "S00_PRECHECK" "success" "runtime dependency check finished"
+  package_manager="$(detect_package_manager)"
+  check_required_command "git" "source checkout and update operations" "${package_manager}" || true
+  if [ "${SKIP_NODE_INSTALL}" -eq 0 ] || [ "${START_AFTER_INSTALL}" -eq 1 ]; then
+    check_required_command "node" "component runtime and build scripts" "${package_manager}" || true
+  fi
+  if [ "${SKIP_NODE_INSTALL}" -eq 0 ]; then
+    check_required_command "npm" "node dependency installation" "${package_manager}" || true
+  fi
+  if [ "${SKIP_PYTHON_INSTALL}" -eq 0 ] || [ "${INSTALL_PLUGIN_PYTHON_DEPS}" -eq 1 ]; then
+    check_required_command "python3" "python dependencies and helper scripts" "${package_manager}" || true
+  fi
+  if [ "${SKIP_PYTHON_INSTALL}" -eq 0 ]; then
+    if ! command -v pip3 >/dev/null 2>&1 && ! command -v python3 >/dev/null 2>&1; then
+      check_required_command "pip3" "python dependency installation" "${package_manager}" || true
+    fi
+  fi
+  if [ "${INSTALL_STATUS}" = "failed" ]; then
+    precheck_status="failed"
+  elif [ "${INSTALL_STATUS}" = "warning" ]; then
+    precheck_status="warning"
+  else
+    precheck_status="success"
+  fi
+  add_install_step "S00_PRECHECK" "${precheck_status}" "runtime dependency check finished (pkg-manager=${package_manager})"
 
   if ! parse_install_components; then
     write_state "${session_file}" "S05_COMPONENTS" "failed" "invalid-component-selection"
@@ -949,6 +1107,9 @@ run_install_flow() {
       fi
     else
       if install_component_dependencies "TOOLBOX" "${toolbox_dir}"; then
+        if [ "${INSTALL_PLUGIN_PYTHON_DEPS}" -eq 1 ]; then
+          install_plugin_python_requirements "TOOLBOX" "${toolbox_dir}" || true
+        fi
         setup_vcptoolbox_config "${toolbox_dir}" "${chat_dir}"
         if [ "${DRY_RUN}" -eq 1 ] || [ -f "${toolbox_dir}/config.env" ]; then
           add_install_step "S50_TOOLBOX" "success" "dependency/config completed"
@@ -975,6 +1136,9 @@ run_install_flow() {
       fi
     else
       if install_component_dependencies "CHAT" "${chat_dir}"; then
+        if [ "${INSTALL_PLUGIN_PYTHON_DEPS}" -eq 1 ]; then
+          install_plugin_python_requirements "CHAT" "${chat_dir}" || true
+        fi
         setup_vcpchat_config "${chat_dir}" "${toolbox_dir}"
         if [ "${DRY_RUN}" -eq 1 ] || [ -f "${chat_dir}/AppData/settings.json" ]; then
           add_install_step "S51_CHAT" "success" "dependency/config completed"
@@ -1162,6 +1326,14 @@ while [ $# -gt 0 ]; do
       ;;
     --skip-python-install)
       SKIP_PYTHON_INSTALL=1
+      shift
+      ;;
+    --install-plugin-python-deps)
+      INSTALL_PLUGIN_PYTHON_DEPS=1
+      shift
+      ;;
+    --strict-dependencies)
+      STRICT_DEPENDENCIES=1
       shift
       ;;
     --overwrite-config)

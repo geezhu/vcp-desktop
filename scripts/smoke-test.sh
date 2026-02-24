@@ -60,6 +60,11 @@ cat > "${INSTALL_WORKSPACE}/VCPChat/package.json" <<'EOF'
 }
 EOF
 
+mkdir -p "${INSTALL_WORKSPACE}/VCPToolBox/Plugin/ExamplePlugin"
+cat > "${INSTALL_WORKSPACE}/VCPToolBox/Plugin/ExamplePlugin/requirements.txt" <<'EOF'
+# smoke-test plugin requirements placeholder
+EOF
+
 "${INSTALLER}" --help >/dev/null
 expected_version="$(tr -d '[:space:]' < "${ROOT_DIR}/VERSION")"
 actual_version="$("${INSTALLER}" --version)"
@@ -124,6 +129,20 @@ fi
 if [ ! -f "${INSTALLER_HOME}/reports/install-report-${session_id}.md" ]; then
   echo "Expected install report Markdown missing for session ${session_id}" >&2
   exit 1
+fi
+
+VCP_INSTALLER_HOME="${INSTALLER_HOME}" \
+VCP_INSTALLER_STATE_DIR="${STATE_DIR}" \
+"${INSTALLER}" install --cli --yes --dry-run \
+  --workspace-root "${INSTALL_WORKSPACE}" \
+  --components toolbox \
+  --skip-node-install \
+  --install-plugin-python-deps > "${TMP_DIR}/install-plugin-dryrun.log"
+
+if command -v rg >/dev/null 2>&1; then
+  rg -q "plugin requirements file\\(s\\)" "${TMP_DIR}/install-plugin-dryrun.log"
+else
+  grep -q "plugin requirements file(s)" "${TMP_DIR}/install-plugin-dryrun.log"
 fi
 
 set +e
