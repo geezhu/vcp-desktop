@@ -21,6 +21,19 @@ fi
 cd "${DIST_DIR}"
 sha256sum -c SHA256SUMS
 
+if [ -f "SHA256SUMS.sig" ] && [ -f "SHA256SUMS.pem" ]; then
+  if command -v cosign >/dev/null 2>&1; then
+    cosign verify-blob \
+      --certificate "SHA256SUMS.pem" \
+      --signature "SHA256SUMS.sig" \
+      --certificate-identity-regexp "https://github.com/.+/.+/.github/workflows/release.yml@.+" \
+      --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+      "SHA256SUMS"
+  else
+    echo "cosign not found; skipping SHA256SUMS.sig verification in local mode."
+  fi
+fi
+
 mkdir -p "${WORK_DIR}/tar" "${WORK_DIR}/appimage"
 
 tar -xzf "${TAR_PATH}" -C "${WORK_DIR}/tar"

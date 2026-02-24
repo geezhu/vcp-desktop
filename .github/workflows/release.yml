@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   package-and-release:
@@ -35,10 +36,34 @@ jobs:
           set -euo pipefail
           ./scripts/build-tarball.sh
           ./scripts/build-appimage.sh
-          ./scripts/verify-artifacts.sh
 
           echo "Generated artifacts:"
           ls -lh dist
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign and verify checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes \
+            --output-signature dist/SHA256SUMS.sig \
+            --output-certificate dist/SHA256SUMS.pem \
+            dist/SHA256SUMS
+
+          cosign verify-blob \
+            --certificate dist/SHA256SUMS.pem \
+            --signature dist/SHA256SUMS.sig \
+            --certificate-identity-regexp "https://github.com/.+/.+/.github/workflows/release.yml@.+" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            dist/SHA256SUMS
+
+      - name: Verify artifact integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/verify-artifacts.sh
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4

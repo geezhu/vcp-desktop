@@ -40,3 +40,11 @@ By default, local build outputs are generated in `dist/` and temporary AppImage 
 1. This baseline does not yet implement full component installation logic.
 2. AppImage build downloads `appimagetool` into `.local-build-env/tools/`.
 3. For headless mode, GUI-required steps must emit a structured block and exit non-zero.
+
+## Release Signature
+
+1. Release workflow signs `dist/SHA256SUMS` with `cosign keyless` and publishes:
+   - `SHA256SUMS.sig`
+   - `SHA256SUMS.pem`
+2. Signature is verified in workflow before release upload.
+3. Local verification script (`scripts/verify-artifacts.sh`) verifies signature when `cosign` is available.
