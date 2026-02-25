@@ -22,6 +22,7 @@ chmod +x bin/vcp-installer scripts/*.sh
 ./bin/vcp-installer --help
 ./bin/vcp-installer install --cli --yes --components all --workspace-root ~/vcp
 ./bin/vcp-installer install --cli --yes --components toolbox --install-plugin-python-deps --strict-dependencies
+./bin/vcp-installer install --cli --yes --components toolbox --install-plugin-manifest-deps --strict-dependencies
 ./bin/vcp-installer --cli --dry-run
 ./bin/vcp-installer resume --cli --dry-run
 ./bin/vcp-installer --headless --dry-run --simulate-gui-step
@@ -55,13 +56,15 @@ By default, local build outputs are generated in `dist/` and temporary AppImage 
 
 ## Notes
 
-1. Installer now covers minimal component install/config flow; full plugin/system dependency coverage remains incremental.
+1. Installer now includes plugin/system dependency matrix discovery for selected components.
 2. AppImage build downloads `appimagetool` into `.local-build-env/tools/`.
 3. For headless mode, GUI-required steps must emit a structured block and exit non-zero.
 4. Default profile is user-level isolated (`~/.local/share/vcpinstallergui`) to reduce system environment pollution.
 5. Use `--install-plugin-python-deps` to include Plugin/**/requirements.txt install.
-6. Use `--strict-dependencies` to fail fast when required commands are missing.
-7. Non-interactive `--runtime-mode system` requires `--allow-system-integration` and writes audit log.
+6. Use `--install-plugin-manifest-deps` to apply `Plugin/**/plugin-manifest.json` npm/pip dependencies.
+7. Use `--strict-dependencies` to fail fast when required commands are missing (including manifest-declared system deps).
+8. Install flow exports dependency matrix report to `reports/dependency-matrix-<session>.md`.
+9. Non-interactive `--runtime-mode system` requires `--allow-system-integration` and writes audit log.
 
 ## Installer Outputs
 
@@ -77,9 +80,10 @@ By default, local build outputs are generated in `dist/` and temporary AppImage 
 4. Manifest template path: `manifests/runtime-manifest-linux-x86_64.txt`.
 5. Validate manifest: `./scripts/validate-runtime-manifest.sh manifests/runtime-manifest-linux-x86_64.txt linux-x86_64`.
 6. Network regression (fallback/offline/resume): `./scripts/runtime-regression.sh`.
-7. The default manifest is a template; replace artifact URLs and SHA256 values before production init.
+7. Default manifest already maps to production GitHub `v0.2.0` runtime assets.
 8. Current platform target is Linux `x86_64` (`glibc` baseline); Ubuntu/Debian are regression baselines, not exclusive distro locks.
 9. Gitee mirror strategy is currently frozen; GitHub release source is the active publish path.
+10. Signature policy: runtime files are verified by SHA256 from manifest, and release-level `SHA256SUMS` is signed via cosign (`SHA256SUMS.sig` + `SHA256SUMS.pem`).
 
 ## Design Docs
 

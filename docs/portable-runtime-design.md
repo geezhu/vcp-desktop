@@ -3,7 +3,7 @@
 **文档版本**: 0.3.1  
 **创建日期**: 2026-02-25  
 **更新日期**: 2026-02-25  
-**状态**: In Progress（Core Implemented）
+**状态**: Completed（Core Implemented + Release Validated）
 
 ---
 
@@ -121,4 +121,6 @@
 3. 已实现 `--runtime-mode portable|system`，`start` 支持 portable wrapper 启动。
 4. 已实现 `status` 运行时健康输出与 `reset --reset-runtime` 清理。
 5. 已实现 smoke 与回归脚本覆盖（mock 下载、失败恢复、镜像回退）。
-6. 待阻塞项：GitHub runtime 发布仓库地址未最终确认，默认 manifest 仍为模板占位。
+6. runtime 发布仓库已确认并生效：`geezhu/vcp-desktop`（`v0.2.0`）。
+7. 默认 manifest 已切换为生产 URL，且对应 SHA256 已与线上资产对齐。
+8. 签名策略已落地：发布时对 `SHA256SUMS` 进行 cosign keyless 签名并校验（`SHA256SUMS.sig` + `SHA256SUMS.pem`）。

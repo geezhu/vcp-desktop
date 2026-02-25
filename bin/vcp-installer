@@ -25,6 +25,7 @@ START_AFTER_INSTALL=0
 SKIP_NODE_INSTALL=0
 SKIP_PYTHON_INSTALL=0
 INSTALL_PLUGIN_PYTHON_DEPS=0
+INSTALL_PLUGIN_MANIFEST_DEPS=0
 STRICT_DEPENDENCIES=0
 FORCE_CONFIG_REWRITE=0
 INSTALL_COMPONENTS_ARG="all"
@@ -69,6 +70,8 @@ INSTALL_STATUS="success"
 INSTALL_WARNINGS=()
 INSTALL_ERRORS=()
 INSTALL_STEPS=()
+DEPENDENCY_MATRIX_ROWS=()
+DEPENDENCY_MATRIX_REPORT_MD=""
 INSTALL_TOOLBOX_ENABLED=1
 INSTALL_CHAT_ENABLED=1
 RUNTIME_WRAPPER_PATH=""
@@ -195,6 +198,8 @@ Options:
   --skip-python-install   Skip pip dependency installation
   --install-plugin-python-deps
                            Install Plugin/**/requirements.txt for selected components
+  --install-plugin-manifest-deps
+                           Install dependencies declared in Plugin/**/plugin-manifest.json
   --strict-dependencies   Treat missing required commands as install errors
   --overwrite-config      Rewrite generated config files if already present
   --start-after-install   Start backend/chat after install flow
@@ -218,7 +223,7 @@ Options:
 
 Examples:
   vcp-installer
-  vcp-installer install --cli --yes --components all
+  vcp-installer install --cli --yes --components all --install-plugin-manifest-deps
   vcp-installer init --gui
   vcp-installer init --cli --yes --runtime-mode portable --runtime-manifest ./manifests/runtime-manifest-linux-x86_64.txt --workspace-root ~/vcp --backend-cmd "node server.js" --chat-cmd "npm run start"
   vcp-installer init --cli --yes --runtime-mode system --allow-system-integration --workspace-root ~/vcp
@@ -518,6 +523,7 @@ validate_runtime_manifest_record() {
   local platform="$4"
   local url_primary="$5"
   local sha256="$6"
+  local signature="${7:-}"
 
   if ! printf '%s' "${name}" | grep -Eq '^[A-Za-z0-9._-]+$'; then
     log ERROR "Manifest line ${line_no}: invalid artifact name '${name}'"
@@ -541,6 +547,10 @@ validate_runtime_manifest_record() {
   fi
   if ! printf '%s' "${sha256}" | grep -Eq '^[a-fA-F0-9]{64}$'; then
     log ERROR "Manifest line ${line_no}: invalid sha256 '${sha256}'"
+    return 1
+  fi
+  if [ -n "${signature}" ] && [ "${signature}" != "-" ] && ! is_url_like "${signature}"; then
+    log ERROR "Manifest line ${line_no}: signature must be http(s):// or file:// when provided"
     return 1
   fi
   return 0
@@ -586,7 +596,7 @@ parse_runtime_manifest() {
         manifest_version="${name}"
         ;;
       artifact)
-        validate_runtime_manifest_record "${line_no}" "${name}" "${version}" "${platform}" "${url_primary}" "${sha256}" || return 1
+        validate_runtime_manifest_record "${line_no}" "${name}" "${version}" "${platform}" "${url_primary}" "${sha256}" "${signature:-}" || return 1
         if [ "${platform}" != "${PLATFORM_TAG}" ] && [ "${platform}" != "all" ]; then
           continue
         fi
@@ -998,6 +1008,237 @@ add_install_step() {
   INSTALL_STEPS+=("${step_id}|${status}|${detail}")
 }
 
+add_dependency_matrix_row() {
+  local component_name="$1"
+  local source_type="$2"
+  local source_path="$3"
+  local dep_type="$4"
+  local dep_value="$5"
+  DEPENDENCY_MATRIX_ROWS+=("${component_name}|${source_type}|${source_path}|${dep_type}|${dep_value}")
+}
+
+append_unique() {
+  local array_name="$1"
+  local value="$2"
+  local item
+  local -n arr_ref="${array_name}"
+
+  for item in "${arr_ref[@]}"; do
+    if [ "${item}" = "${value}" ]; then
+      return 0
+    fi
+  done
+  arr_ref+=("${value}")
+}
+
+write_dependency_matrix_report() {
+  local matrix_row
+  local component_name
+  local source_type
+  local source_path
+  local dep_type
+  local dep_value
+
+  if [ "${DRY_RUN}" -eq 1 ]; then
+    return
+  fi
+
+  if [ "${#DEPENDENCY_MATRIX_ROWS[@]}" -eq 0 ]; then
+    return
+  fi
+
+  DEPENDENCY_MATRIX_REPORT_MD="${REPORT_DIR}/dependency-matrix-${SESSION_ID}.md"
+
+  {
+    printf '# Dependency Matrix Report\n\n'
+    printf -- '- Session: `%s`\n' "${SESSION_ID}"
+    printf -- '- Generated At (UTC): `%s`\n' "$(timestamp)"
+    printf -- '- Rows: `%s`\n\n' "${#DEPENDENCY_MATRIX_ROWS[@]}"
+    printf '| Component | Source Type | Source Path | Dependency Type | Value |\n'
+    printf '| --- | --- | --- | --- | --- |\n'
+    for matrix_row in "${DEPENDENCY_MATRIX_ROWS[@]}"; do
+      IFS='|' read -r component_name source_type source_path dep_type dep_value <<< "${matrix_row}"
+      printf '| %s | %s | %s | %s | `%s` |\n' \
+        "${component_name}" \
+        "${source_type}" \
+        "${source_path}" \
+        "${dep_type}" \
+        "${dep_value}"
+    done
+  } > "${DEPENDENCY_MATRIX_REPORT_MD}"
+
+  log INFO "Dependency matrix report: ${DEPENDENCY_MATRIX_REPORT_MD}"
+}
+
+emit_manifest_dependencies() {
+  local manifest_file="$1"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "${manifest_file}" <<'PY'
+import json
+import sys
+
+manifest_path = sys.argv[1]
+with open(manifest_path, "r", encoding="utf-8") as fp:
+    data = json.load(fp)
+
+deps = data.get("dependencies") or {}
+if not isinstance(deps, dict):
+    sys.exit(0)
+
+for dep_type in ("npm", "pip", "system"):
+    values = deps.get(dep_type, [])
+    if isinstance(values, str):
+        values = [values]
+    if not isinstance(values, list):
+        continue
+    for raw in values:
+        if isinstance(raw, str):
+            value = raw.strip()
+            if value:
+                print(f"{dep_type}|{value}")
+PY
+    return
+  fi
+
+  if command -v node >/dev/null 2>&1; then
+    node - "${manifest_file}" <<'NODE'
+const fs = require("fs");
+
+const manifestPath = process.argv[2];
+const data = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+const deps = data.dependencies || {};
+
+for (const depType of ["npm", "pip", "system"]) {
+  let values = deps[depType] ?? [];
+  if (typeof values === "string") values = [values];
+  if (!Array.isArray(values)) continue;
+  for (const raw of values) {
+    if (typeof raw !== "string") continue;
+    const value = raw.trim();
+    if (value) {
+      process.stdout.write(`${depType}|${value}\n`);
+    }
+  }
+}
+NODE
+    return
+  fi
+
+  return 127
+}
+
+collect_plugin_manifest_dependencies() {
+  local component_name="$1"
+  local component_dir="$2"
+  local npm_array_name="$3"
+  local pip_array_name="$4"
+  local system_array_name="$5"
+  local manifest_count_name="$6"
+  local plugin_root="${component_dir}/Plugin"
+  local manifest_file
+  local manifest_files=()
+  local parsed_rows
+  local parse_err
+  local dep_row
+  local dep_type
+  local dep_value
+  local rel_path
+  local -n npm_deps_ref="${npm_array_name}"
+  local -n pip_deps_ref="${pip_array_name}"
+  local -n system_deps_ref="${system_array_name}"
+  local -n manifest_count_ref="${manifest_count_name}"
+
+  npm_deps_ref=()
+  pip_deps_ref=()
+  system_deps_ref=()
+  manifest_count_ref=0
+
+  if [ ! -d "${plugin_root}" ]; then
+    return 0
+  fi
+
+  while IFS= read -r -d '' manifest_file; do
+    manifest_files+=("${manifest_file}")
+  done < <(find "${plugin_root}" -type f -name plugin-manifest.json -print0 2>/dev/null)
+
+  manifest_count_ref="${#manifest_files[@]}"
+  if [ "${manifest_count_ref}" -eq 0 ]; then
+    return 0
+  fi
+
+  for manifest_file in "${manifest_files[@]}"; do
+    rel_path="${manifest_file#${component_dir}/}"
+    parse_err=""
+    if ! parsed_rows="$(emit_manifest_dependencies "${manifest_file}" 2>/dev/null)"; then
+      if command -v python3 >/dev/null 2>&1 || command -v node >/dev/null 2>&1; then
+        parse_err="failed to parse plugin manifest JSON"
+      else
+        parse_err="python3/node is not available to parse plugin-manifest dependencies"
+      fi
+      add_install_warning "${component_name}: ${parse_err} (${rel_path})"
+      log WARN "${component_name}: ${parse_err} (${rel_path})"
+      continue
+    fi
+
+    while IFS= read -r dep_row; do
+      if [ -z "${dep_row}" ]; then
+        continue
+      fi
+      IFS='|' read -r dep_type dep_value <<< "${dep_row}"
+      if [ -z "${dep_type}" ] || [ -z "${dep_value}" ]; then
+        continue
+      fi
+      case "${dep_type}" in
+        npm)
+          append_unique "${npm_array_name}" "${dep_value}"
+          ;;
+        pip)
+          append_unique "${pip_array_name}" "${dep_value}"
+          ;;
+        system)
+          append_unique "${system_array_name}" "${dep_value}"
+          ;;
+        *)
+          continue
+          ;;
+      esac
+      add_dependency_matrix_row "${component_name}" "plugin-manifest" "${rel_path}" "${dep_type}" "${dep_value}"
+    done <<< "${parsed_rows}"
+  done
+}
+
+build_command_with_args() {
+  local base_cmd="$1"
+  shift
+  local arg
+  local command_line="${base_cmd}"
+  for arg in "$@"; do
+    command_line+=" $(printf '%q' "${arg}")"
+  done
+  printf '%s\n' "${command_line}"
+}
+
+precheck_system_dependency_list() {
+  local component_name="$1"
+  local package_manager="$2"
+  shift 2
+  local dependency
+  local strict_missing=0
+
+  for dependency in "$@"; do
+    if ! check_required_command "${dependency}" "plugin manifest system dependency (${component_name})" "${package_manager}"; then
+      if [ "${STRICT_DEPENDENCIES}" -eq 1 ]; then
+        strict_missing=1
+      fi
+    fi
+  done
+
+  if [ "${strict_missing}" -eq 1 ]; then
+    return 1
+  fi
+  return 0
+}
+
 json_escape() {
   local value="$1"
   value="${value//\\/\\\\}"
@@ -1369,9 +1610,103 @@ install_plugin_python_requirements() {
   return 0
 }
 
+install_plugin_manifest_dependencies() {
+  local component_name="$1"
+  local component_dir="$2"
+  local package_manager="$3"
+  local plugin_root="${component_dir}/Plugin"
+  local req_file
+  local req_files=()
+  local req_count=0
+  local rel_req_path
+  local manifest_npm_deps=()
+  local manifest_pip_deps=()
+  local manifest_system_deps=()
+  local manifest_count=0
+  local npm_command
+  local pip_command
+
+  if [ -d "${plugin_root}" ]; then
+    while IFS= read -r -d '' req_file; do
+      req_files+=("${req_file}")
+    done < <(find "${plugin_root}" -type f -name requirements.txt -print0 2>/dev/null)
+  fi
+  req_count="${#req_files[@]}"
+  for req_file in "${req_files[@]}"; do
+    rel_req_path="${req_file#${component_dir}/}"
+    add_dependency_matrix_row "${component_name}" "plugin-requirements" "${rel_req_path}" "pip-file" "requirements.txt"
+  done
+
+  collect_plugin_manifest_dependencies \
+    "${component_name}" \
+    "${component_dir}" \
+    manifest_npm_deps \
+    manifest_pip_deps \
+    manifest_system_deps \
+    manifest_count
+
+  if [ "${manifest_count}" -eq 0 ] && [ "${req_count}" -eq 0 ]; then
+    add_install_step "S43_${component_name}_PLUGIN_MATRIX" "success" "no plugin-manifest.json or plugin requirements found"
+    return 0
+  fi
+
+  if [ "${#manifest_system_deps[@]}" -gt 0 ]; then
+    if ! precheck_system_dependency_list "${component_name}" "${package_manager}" "${manifest_system_deps[@]}"; then
+      add_install_step "S43_${component_name}_PLUGIN_MATRIX" "failed" "strict system dependency check failed"
+      return 1
+    fi
+  fi
+
+  add_install_step \
+    "S43_${component_name}_PLUGIN_MATRIX" \
+    "success" \
+    "manifests=${manifest_count},plugin_requirements=${req_count},npm=${#manifest_npm_deps[@]},pip=${#manifest_pip_deps[@]},system=${#manifest_system_deps[@]},apply=${INSTALL_PLUGIN_MANIFEST_DEPS}"
+
+  if [ "${INSTALL_PLUGIN_MANIFEST_DEPS}" -eq 0 ]; then
+    return 0
+  fi
+
+  if [ "${#manifest_npm_deps[@]}" -gt 0 ]; then
+    if [ "${SKIP_NODE_INSTALL}" -eq 1 ]; then
+      add_install_warning "${component_name}: manifest npm dependencies skipped by --skip-node-install"
+    elif [ ! -f "${component_dir}/package.json" ]; then
+      add_install_warning "${component_name}: manifest npm dependencies detected but package.json is missing"
+    else
+      npm_command="$(build_command_with_args "npm install --no-audit --no-fund --no-save" "${manifest_npm_deps[@]}")"
+      run_step_command "S44_${component_name}_PLUGIN_MANIFEST_NPM" "${component_dir}" "${npm_command}"
+    fi
+  fi
+
+  if [ "${#manifest_pip_deps[@]}" -gt 0 ]; then
+    if [ "${SKIP_PYTHON_INSTALL}" -eq 1 ]; then
+      add_install_warning "${component_name}: manifest pip dependencies skipped by --skip-python-install"
+    elif command -v pip3 >/dev/null 2>&1; then
+      pip_command="$(build_command_with_args "pip3 install" "${manifest_pip_deps[@]}")"
+      run_step_command "S45_${component_name}_PLUGIN_MANIFEST_PY" "${component_dir}" "${pip_command}"
+    elif command -v python3 >/dev/null 2>&1; then
+      pip_command="$(build_command_with_args "python3 -m pip install" "${manifest_pip_deps[@]}")"
+      run_step_command "S45_${component_name}_PLUGIN_MANIFEST_PY" "${component_dir}" "${pip_command}"
+    else
+      add_install_error "${component_name}: cannot install manifest pip dependencies because pip3/python3 is missing"
+      return 1
+    fi
+  fi
+
+  return 0
+}
+
 install_component_dependencies() {
   local component_name="$1"
   local component_dir="$2"
+  local package_manager="$3"
+
+  if [ -f "${component_dir}/package.json" ]; then
+    add_dependency_matrix_row "${component_name}" "component" "package.json" "npm-file" "package.json"
+  fi
+
+  if [ -f "${component_dir}/requirements.txt" ]; then
+    add_dependency_matrix_row "${component_name}" "component" "requirements.txt" "pip-file" "requirements.txt"
+  fi
 
   if [ "${SKIP_NODE_INSTALL}" -eq 0 ] && [ -f "${component_dir}/package.json" ]; then
     run_step_command "S40_${component_name}_NODE" "${component_dir}" "npm install --no-audit --no-fund"
@@ -1393,6 +1728,8 @@ install_component_dependencies() {
     add_install_warning "${component_name}: python install skipped by flag"
     log WARN "${component_name}: python install skipped by flag"
   fi
+
+  install_plugin_manifest_dependencies "${component_name}" "${component_dir}" "${package_manager}"
 }
 
 write_install_report() {
@@ -1410,6 +1747,7 @@ write_install_report() {
   REPORT_DIR="${INSTALLER_HOME}/reports"
   INSTALL_REPORT_JSON="${REPORT_DIR}/install-report-${SESSION_ID}.json"
   INSTALL_REPORT_MD="${REPORT_DIR}/install-report-${SESSION_ID}.md"
+  DEPENDENCY_MATRIX_REPORT_MD="${REPORT_DIR}/dependency-matrix-${SESSION_ID}.md"
 
   if [ "${DRY_RUN}" -eq 1 ]; then
     log INFO "Dry-run: would write install reports to ${REPORT_DIR}"
@@ -1432,6 +1770,7 @@ write_install_report() {
     printf '    "manifest_path": "%s",\n' "$(json_escape "${RUNTIME_MANIFEST_PATH_RESOLVED}")"
     printf '    "wrapper_path": "%s"\n' "$(json_escape "${RUNTIME_WRAPPER_PATH}")"
     printf '  },\n'
+    printf '  "dependency_matrix_report": "%s",\n' "$(json_escape "${DEPENDENCY_MATRIX_REPORT_MD}")"
     printf '  "global_mutation": {\n'
     printf '    "path_modified": false,\n'
     printf '    "global_npm_install": false,\n'
@@ -1487,6 +1826,7 @@ write_install_report() {
     printf -- '- Runtime Mode: `%s`\n' "${RUNTIME_MODE}"
     printf -- '- Runtime Manifest: `%s`\n' "${RUNTIME_MANIFEST_SOURCE:-<unset>}"
     printf -- '- Runtime Wrapper: `%s`\n' "${RUNTIME_WRAPPER_PATH:-<unset>}"
+    printf -- '- Dependency Matrix Report: `%s`\n' "${DEPENDENCY_MATRIX_REPORT_MD}"
     printf -- '- Global Mutation Safe: `true`\n'
     printf '\n## Steps\n\n'
     for step_row in "${INSTALL_STEPS[@]}"; do
@@ -1513,6 +1853,8 @@ write_install_report() {
       done
     fi
   } > "${INSTALL_REPORT_MD}"
+
+  write_dependency_matrix_report
 
   log INFO "Install report JSON: ${INSTALL_REPORT_JSON}"
   log INFO "Install report Markdown: ${INSTALL_REPORT_MD}"
@@ -1786,6 +2128,7 @@ run_install_flow() {
   INSTALL_WARNINGS=()
   INSTALL_ERRORS=()
   INSTALL_STEPS=()
+  DEPENDENCY_MATRIX_ROWS=()
 
   write_state "${session_file}" "S00_PRECHECK" "running" "precheck-started"
   log INFO "Step S00_PRECHECK: validating runtime dependencies"
@@ -1859,7 +2202,7 @@ run_install_flow() {
         add_install_step "S50_TOOLBOX" "failed" "missing directory"
       fi
     else
-      if install_component_dependencies "TOOLBOX" "${toolbox_dir}"; then
+      if install_component_dependencies "TOOLBOX" "${toolbox_dir}" "${package_manager}"; then
         if [ "${INSTALL_PLUGIN_PYTHON_DEPS}" -eq 1 ]; then
           install_plugin_python_requirements "TOOLBOX" "${toolbox_dir}" || true
         fi
@@ -1888,7 +2231,7 @@ run_install_flow() {
         add_install_step "S51_CHAT" "failed" "missing directory"
       fi
     else
-      if install_component_dependencies "CHAT" "${chat_dir}"; then
+      if install_component_dependencies "CHAT" "${chat_dir}" "${package_manager}"; then
         if [ "${INSTALL_PLUGIN_PYTHON_DEPS}" -eq 1 ]; then
           install_plugin_python_requirements "CHAT" "${chat_dir}" || true
         fi
@@ -2212,6 +2555,10 @@ while [ $# -gt 0 ]; do
       ;;
     --install-plugin-python-deps)
       INSTALL_PLUGIN_PYTHON_DEPS=1
+      shift
+      ;;
+    --install-plugin-manifest-deps)
+      INSTALL_PLUGIN_MANIFEST_DEPS=1
       shift
       ;;
     --strict-dependencies)

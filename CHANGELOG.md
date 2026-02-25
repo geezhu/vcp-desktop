@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Plugin/system dependency matrix automation in `install` flow:
+  - Parse `Plugin/**/plugin-manifest.json` dependencies (`npm`/`pip`/`system`).
+  - Precheck manifest-declared system dependencies with package-manager hints.
+  - Export dependency matrix report (`reports/dependency-matrix-<session>.md`).
+- Optional installer flag `--install-plugin-manifest-deps` to apply manifest-declared npm/pip dependencies.
+
+### Changed
+
+- Smoke test now validates dependency matrix reporting and plugin-manifest dependency discovery.
+
 ## v0.2.0 - 2026-02-25
 
 ### Added

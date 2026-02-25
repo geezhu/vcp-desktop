@@ -64,6 +64,12 @@ while IFS= read -r raw_line || [ -n "${raw_line}" ]; do
         echo "Invalid line ${line_no}: invalid sha256 '${sha256}'" >&2
         exit 1
       fi
+      if [ -n "${signature}" ] && [ "${signature}" != "-" ]; then
+        if ! printf '%s' "${signature}" | grep -Eq '^(https?|file)://'; then
+          echo "Invalid line ${line_no}: signature must be http(s):// or file:// when provided" >&2
+          exit 1
+        fi
+      fi
       if [ "${platform}" = "${platform_tag}" ] || [ "${platform}" = "all" ]; then
         artifact_count=$((artifact_count + 1))
       fi

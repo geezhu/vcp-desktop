@@ -131,6 +131,18 @@ cat > "${INSTALL_WORKSPACE}/VCPToolBox/Plugin/ExamplePlugin/requirements.txt" <<
 # smoke-test plugin requirements placeholder
 EOF
 
+cat > "${INSTALL_WORKSPACE}/VCPToolBox/Plugin/ExamplePlugin/plugin-manifest.json" <<'EOF'
+{
+  "name": "ExamplePlugin",
+  "version": "0.0.1",
+  "dependencies": {
+    "system": ["bash"],
+    "pip": ["requests>=2.31.0"],
+    "npm": ["left-pad@1.3.0"]
+  }
+}
+EOF
+
 "${INSTALLER}" --help >/dev/null
 expected_version="$(tr -d '[:space:]' < "${ROOT_DIR}/VERSION")"
 actual_version="$("${INSTALLER}" --version)"
@@ -259,6 +271,11 @@ if [ ! -f "${INSTALLER_HOME}/reports/install-report-${session_id}.json" ]; then
   exit 1
 fi
 
+if [ ! -f "${INSTALLER_HOME}/reports/dependency-matrix-${session_id}.md" ]; then
+  echo "Expected dependency matrix report missing for session ${session_id}" >&2
+  exit 1
+fi
+
 if [ ! -f "${INSTALLER_HOME}/reports/install-report-${session_id}.md" ]; then
   echo "Expected install report Markdown missing for session ${session_id}" >&2
   exit 1
@@ -270,6 +287,14 @@ if command -v rg >/dev/null 2>&1; then
 else
   grep -q "\"global_mutation\"" "${INSTALLER_HOME}/reports/install-report-${session_id}.json"
   grep -q "\"safe_default\": true" "${INSTALLER_HOME}/reports/install-report-${session_id}.json"
+fi
+
+if command -v rg >/dev/null 2>&1; then
+  rg -q "plugin-manifest" "${INSTALLER_HOME}/reports/dependency-matrix-${session_id}.md"
+  rg -q "system.*bash" "${INSTALLER_HOME}/reports/dependency-matrix-${session_id}.md"
+else
+  grep -q "plugin-manifest" "${INSTALLER_HOME}/reports/dependency-matrix-${session_id}.md"
+  grep -q "system.*bash" "${INSTALLER_HOME}/reports/dependency-matrix-${session_id}.md"
 fi
 
 VCP_INSTALLER_HOME="${INSTALLER_HOME}" \
