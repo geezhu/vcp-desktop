@@ -28,6 +28,11 @@ INSTALL_PLUGIN_PYTHON_DEPS=0
 STRICT_DEPENDENCIES=0
 FORCE_CONFIG_REWRITE=0
 INSTALL_COMPONENTS_ARG="all"
+RUNTIME_MODE="portable"
+RUNTIME_MODE_CLI_SET=0
+RUNTIME_MANIFEST_ARG="${VCP_RUNTIME_MANIFEST:-}"
+RESET_RUNTIME=0
+INIT_RESUME_MODE=0
 
 VCP_API_URL_ARG="${VCP_API_URL:-}"
 VCP_API_KEY_ARG="${VCP_API_KEY:-}"
@@ -65,6 +70,12 @@ INSTALL_ERRORS=()
 INSTALL_STEPS=()
 INSTALL_TOOLBOX_ENABLED=1
 INSTALL_CHAT_ENABLED=1
+RUNTIME_WRAPPER_PATH=""
+RUNTIME_MANIFEST_PATH_RESOLVED=""
+RUNTIME_MANIFEST_SOURCE=""
+RUNTIME_MANIFEST_LOCK_FILE=""
+RUNTIME_ENTRIES=()
+RUNTIME_GLOBAL_MUTATION_SAFE=1
 
 resolve_installer_home() {
   if [ -n "${VCP_INSTALLER_HOME:-}" ]; then
@@ -85,13 +96,56 @@ resolve_installer_home() {
   printf '%s/.vcpinstallergui\n' "${ROOT_DIR}"
 }
 
+detect_platform_tag() {
+  local os
+  local arch
+  os="$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  arch="$(uname -m 2>/dev/null)"
+
+  case "${arch}" in
+    x86_64|amd64)
+      arch="x86_64"
+      ;;
+    aarch64|arm64)
+      arch="aarch64"
+      ;;
+  esac
+
+  if [ -z "${os}" ]; then
+    os="linux"
+  fi
+  if [ -z "${arch}" ]; then
+    arch="x86_64"
+  fi
+
+  printf '%s-%s\n' "${os}" "${arch}"
+}
+
 INSTALLER_HOME="$(resolve_installer_home)"
 STATE_DIR="${VCP_INSTALLER_STATE_DIR:-${INSTALLER_HOME}/state}"
 CONFIG_FILE="${INSTALLER_HOME}/launcher-config.env"
 RUN_DIR="${INSTALLER_HOME}/run"
 LOG_DIR="${INSTALLER_HOME}/logs"
+PLATFORM_TAG="$(detect_platform_tag)"
+RUNTIME_ROOT="${INSTALLER_HOME}/runtime"
+RUNTIME_CACHE_DIR="${RUNTIME_ROOT}/cache"
+RUNTIME_MANIFESTS_DIR="${RUNTIME_ROOT}/manifests"
+RUNTIME_COMPONENTS_DIR="${RUNTIME_ROOT}/components"
+RUNTIME_BIN_DIR="${RUNTIME_ROOT}/bin"
+RUNTIME_STATE_FILE="${RUNTIME_ROOT}/runtime-state.env"
+RUNTIME_STATUS_JSON="${RUNTIME_ROOT}/runtime-status.json"
+DEFAULT_RUNTIME_MANIFEST="${ROOT_DIR}/manifests/runtime-manifest-${PLATFORM_TAG}.txt"
 
-mkdir -p "${INSTALLER_HOME}" "${STATE_DIR}" "${RUN_DIR}" "${LOG_DIR}"
+mkdir -p \
+  "${INSTALLER_HOME}" \
+  "${STATE_DIR}" \
+  "${RUN_DIR}" \
+  "${LOG_DIR}" \
+  "${RUNTIME_ROOT}" \
+  "${RUNTIME_CACHE_DIR}" \
+  "${RUNTIME_MANIFESTS_DIR}" \
+  "${RUNTIME_COMPONENTS_DIR}" \
+  "${RUNTIME_BIN_DIR}"
 
 timestamp() {
   date -u +"%Y-%m-%dT%H:%M:%SZ"
@@ -128,6 +182,9 @@ Options:
   --yes                   Non-interactive mode
   --simulate-gui-step     Simulate a GUI required step (for testing)
   --no-start-after-init   Initialize only, do not auto-start services
+  --runtime-mode <mode>   Runtime mode: portable|system (default portable)
+  --runtime-manifest <p>  Runtime manifest path/URL for portable bootstrap
+  --reset-runtime         With reset, also remove runtime cache/components
   --workspace-root <dir>  Workspace root path (for init)
   --components <value>    Install targets: all|toolbox|chat|toolbox,chat
   --skip-node-install     Skip npm dependency installation
@@ -159,7 +216,7 @@ Examples:
   vcp-installer
   vcp-installer install --cli --yes --components all
   vcp-installer init --gui
-  vcp-installer init --cli --yes --workspace-root ~/vcp --backend-cmd "node server.js" --chat-cmd "npm run start"
+  vcp-installer init --cli --yes --runtime-mode portable --runtime-manifest ./manifests/runtime-manifest-linux-x86_64.txt --workspace-root ~/vcp --backend-cmd "node server.js" --chat-cmd "npm run start"
   vcp-installer start
   vcp-installer stop
   vcp-installer status
@@ -220,6 +277,618 @@ write_state() {
   "updated_at": "$(timestamp)"
 }
 EOF
+}
+
+runtime_init_profile_file() {
+  printf '%s/init-session-%s.env\n' "${STATE_DIR}" "${SESSION_ID}"
+}
+
+save_init_profile_snapshot() {
+  local profile_file
+  profile_file="$(runtime_init_profile_file)"
+
+  if [ "${DRY_RUN}" -eq 1 ]; then
+    log INFO "Dry-run: would persist init snapshot to ${profile_file}"
+    return
+  fi
+
+  {
+    printf 'WORKSPACE_ROOT_VAL=%q\n' "${WORKSPACE_ROOT_VAL}"
+    printf 'BACKEND_CWD_VAL=%q\n' "${BACKEND_CWD_VAL}"
+    printf 'BACKEND_CMD_VAL=%q\n' "${BACKEND_CMD_VAL}"
+    printf 'CHAT_CWD_VAL=%q\n' "${CHAT_CWD_VAL}"
+    printf 'CHAT_CMD_VAL=%q\n' "${CHAT_CMD_VAL}"
+    printf 'STARTUP_DELAY=%q\n' "${STARTUP_DELAY}"
+    printf 'RUNTIME_MODE=%q\n' "${RUNTIME_MODE}"
+    printf 'RUNTIME_MANIFEST_ARG=%q\n' "${RUNTIME_MANIFEST_ARG}"
+    printf 'NO_START_AFTER_INIT=%q\n' "${NO_START_AFTER_INIT}"
+  } > "${profile_file}"
+}
+
+load_init_profile_snapshot() {
+  local profile_file
+  profile_file="$(runtime_init_profile_file)"
+  if [ ! -f "${profile_file}" ]; then
+    return 1
+  fi
+
+  # shellcheck disable=SC1090
+  source "${profile_file}"
+  return 0
+}
+
+read_state_json_field() {
+  local state_file="$1"
+  local field_name="$2"
+  if [ ! -f "${state_file}" ]; then
+    return
+  fi
+  sed -n "s/.*\"${field_name}\": \"\\([^\"]*\\)\".*/\\1/p" "${state_file}" | head -n 1
+}
+
+is_url_like() {
+  case "$1" in
+    http://*|https://*|file://*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+validate_runtime_mode() {
+  case "${RUNTIME_MODE}" in
+    portable|system)
+      return 0
+      ;;
+    *)
+      echo "Invalid --runtime-mode: ${RUNTIME_MODE} (supported: portable|system)" >&2
+      return 1
+      ;;
+  esac
+}
+
+join_by_colon() {
+  local joined=""
+  local item
+  for item in "$@"; do
+    if [ -z "${item}" ]; then
+      continue
+    fi
+    if [ -z "${joined}" ]; then
+      joined="${item}"
+    else
+      joined="${joined}:${item}"
+    fi
+  done
+  printf '%s' "${joined}"
+}
+
+calc_sha256() {
+  local file_path="$1"
+  sha256sum "${file_path}" | awk '{print $1}'
+}
+
+verify_sha256_file() {
+  local file_path="$1"
+  local expected_sha="$2"
+  local actual_sha
+
+  if [ ! -f "${file_path}" ]; then
+    return 1
+  fi
+
+  actual_sha="$(calc_sha256 "${file_path}")"
+  if [ "${actual_sha}" = "${expected_sha}" ]; then
+    return 0
+  fi
+  return 1
+}
+
+require_download_client() {
+  if command -v curl >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v wget >/dev/null 2>&1; then
+    return 0
+  fi
+  log ERROR "Neither curl nor wget is available for runtime download."
+  return 1
+}
+
+download_url_with_resume() {
+  local url="$1"
+  local target="$2"
+  local tmp="${target}.part"
+  local rc=0
+
+  mkdir -p "$(dirname "${target}")"
+
+  if command -v curl >/dev/null 2>&1; then
+    if [ -f "${tmp}" ]; then
+      curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 20 -C - -o "${tmp}" "${url}" || rc=$?
+    else
+      curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 20 -o "${tmp}" "${url}" || rc=$?
+    fi
+  elif command -v wget >/dev/null 2>&1; then
+    wget --tries=3 --timeout=20 -c -O "${tmp}" "${url}" || rc=$?
+  else
+    return 1
+  fi
+
+  if [ "${rc}" -ne 0 ]; then
+    return "${rc}"
+  fi
+
+  mv "${tmp}" "${target}"
+}
+
+resolve_runtime_manifest_path() {
+  local manifest_ref
+  local resolved_path
+
+  manifest_ref="${RUNTIME_MANIFEST_ARG:-${DEFAULT_RUNTIME_MANIFEST}}"
+  if [ -z "${manifest_ref}" ]; then
+    log ERROR "Runtime manifest is not provided. Use --runtime-manifest <path_or_url>."
+    return 1
+  fi
+
+  if is_url_like "${manifest_ref}"; then
+    if [ "${DRY_RUN}" -eq 1 ]; then
+      log ERROR "Dry-run with URL manifest is not supported. Provide a local file with --runtime-manifest."
+      return 1
+    fi
+    require_download_client || return 1
+    resolved_path="${RUNTIME_MANIFESTS_DIR}/runtime-manifest-${SESSION_ID}.txt"
+    log INFO "Downloading runtime manifest from ${manifest_ref}"
+    if ! download_url_with_resume "${manifest_ref}" "${resolved_path}"; then
+      log ERROR "Failed to download runtime manifest from ${manifest_ref}"
+      return 1
+    fi
+  else
+    resolved_path="${manifest_ref}"
+    if [ ! -f "${resolved_path}" ]; then
+      log ERROR "Runtime manifest file not found: ${resolved_path}"
+      return 1
+    fi
+  fi
+
+  RUNTIME_MANIFEST_SOURCE="${manifest_ref}"
+  RUNTIME_MANIFEST_PATH_RESOLVED="${resolved_path}"
+  return 0
+}
+
+validate_runtime_manifest_record() {
+  local line_no="$1"
+  local name="$2"
+  local version="$3"
+  local platform="$4"
+  local url_primary="$5"
+  local sha256="$6"
+
+  if ! printf '%s' "${name}" | grep -Eq '^[A-Za-z0-9._-]+$'; then
+    log ERROR "Manifest line ${line_no}: invalid artifact name '${name}'"
+    return 1
+  fi
+  if [ -z "${version}" ]; then
+    log ERROR "Manifest line ${line_no}: empty version"
+    return 1
+  fi
+  if [ -z "${platform}" ]; then
+    log ERROR "Manifest line ${line_no}: empty platform"
+    return 1
+  fi
+  if [ -z "${url_primary}" ] || [ "${url_primary}" = "-" ]; then
+    log ERROR "Manifest line ${line_no}: primary url is required"
+    return 1
+  fi
+  if ! is_url_like "${url_primary}"; then
+    log ERROR "Manifest line ${line_no}: primary url must be http(s):// or file://"
+    return 1
+  fi
+  if ! printf '%s' "${sha256}" | grep -Eq '^[a-fA-F0-9]{64}$'; then
+    log ERROR "Manifest line ${line_no}: invalid sha256 '${sha256}'"
+    return 1
+  fi
+  return 0
+}
+
+parse_runtime_manifest() {
+  local manifest_file="$1"
+  local line
+  local line_no=0
+  local record_type
+  local name
+  local version
+  local platform
+  local url_primary
+  local url_mirror
+  local sha256
+  local signature
+  local extra
+  local manifest_version=""
+
+  RUNTIME_ENTRIES=()
+
+  if [ ! -f "${manifest_file}" ]; then
+    log ERROR "Runtime manifest does not exist: ${manifest_file}"
+    return 1
+  fi
+
+  while IFS= read -r line || [ -n "${line}" ]; do
+    line_no=$((line_no + 1))
+    line="$(printf '%s' "${line}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    if [ -z "${line}" ] || [ "${line#\#}" != "${line}" ]; then
+      continue
+    fi
+
+    IFS='|' read -r record_type name version platform url_primary url_mirror sha256 signature extra <<< "${line}"
+    if [ -n "${extra:-}" ]; then
+      log ERROR "Manifest line ${line_no}: too many fields"
+      return 1
+    fi
+
+    case "${record_type}" in
+      manifest_version)
+        manifest_version="${name}"
+        ;;
+      artifact)
+        validate_runtime_manifest_record "${line_no}" "${name}" "${version}" "${platform}" "${url_primary}" "${sha256}" || return 1
+        if [ "${platform}" != "${PLATFORM_TAG}" ] && [ "${platform}" != "all" ]; then
+          continue
+        fi
+        if [ -z "${url_mirror}" ]; then
+          url_mirror="-"
+        fi
+        if [ -z "${signature}" ]; then
+          signature="-"
+        fi
+        RUNTIME_ENTRIES+=("${name}|${version}|${platform}|${url_primary}|${url_mirror}|${sha256}|${signature}")
+        ;;
+      *)
+        log ERROR "Manifest line ${line_no}: unknown record type '${record_type}'"
+        return 1
+        ;;
+    esac
+  done < "${manifest_file}"
+
+  if [ -z "${manifest_version}" ]; then
+    log ERROR "Manifest is missing manifest_version record"
+    return 1
+  fi
+
+  if [ "${#RUNTIME_ENTRIES[@]}" -eq 0 ]; then
+    log ERROR "Manifest has no artifact entries for platform ${PLATFORM_TAG}"
+    return 1
+  fi
+
+  return 0
+}
+
+runtime_archive_path_for_entry() {
+  local name="$1"
+  local version="$2"
+  local platform="$3"
+  local url="$4"
+  local archive_name
+  archive_name="$(basename "${url%%\?*}")"
+  archive_name="$(printf '%s' "${archive_name}" | tr -cd 'A-Za-z0-9._-')"
+  if [ -z "${archive_name}" ]; then
+    archive_name="${name}-${version}.archive"
+  fi
+  printf '%s/%s-%s-%s-%s\n' "${RUNTIME_CACHE_DIR}" "${name}" "${version}" "${platform}" "${archive_name}"
+}
+
+RUNTIME_RESOLVED_ENTRIES=()
+
+fetch_runtime_entries() {
+  local row
+  local name
+  local version
+  local platform
+  local url_primary
+  local url_mirror
+  local sha256
+  local signature
+  local archive_path
+  local source_used
+
+  RUNTIME_RESOLVED_ENTRIES=()
+
+  for row in "${RUNTIME_ENTRIES[@]}"; do
+    IFS='|' read -r name version platform url_primary url_mirror sha256 signature <<< "${row}"
+    archive_path="$(runtime_archive_path_for_entry "${name}" "${version}" "${platform}" "${url_primary}")"
+    source_used="${url_primary}"
+
+    if [ "${DRY_RUN}" -eq 1 ]; then
+      log INFO "Dry-run: would download runtime artifact ${name}@${version} -> ${archive_path}"
+      RUNTIME_RESOLVED_ENTRIES+=("${name}|${version}|${platform}|${url_primary}|${url_mirror}|${sha256}|${signature}|${archive_path}|dry-run")
+      continue
+    fi
+
+    if [ -f "${archive_path}" ] && verify_sha256_file "${archive_path}" "${sha256}"; then
+      log INFO "Runtime cache hit: ${archive_path}"
+      RUNTIME_RESOLVED_ENTRIES+=("${name}|${version}|${platform}|${url_primary}|${url_mirror}|${sha256}|${signature}|${archive_path}|cache")
+      continue
+    fi
+
+    if ! download_url_with_resume "${url_primary}" "${archive_path}"; then
+      if [ -n "${url_mirror}" ] && [ "${url_mirror}" != "-" ]; then
+        log WARN "Primary runtime source failed for ${name}@${version}, fallback to mirror."
+        if ! download_url_with_resume "${url_mirror}" "${archive_path}"; then
+          log ERROR "Failed to download runtime artifact from both primary and mirror: ${name}@${version}"
+          return 1
+        fi
+        source_used="${url_mirror}"
+      else
+        log ERROR "Failed to download runtime artifact: ${name}@${version}"
+        return 1
+      fi
+    fi
+
+    RUNTIME_RESOLVED_ENTRIES+=("${name}|${version}|${platform}|${url_primary}|${url_mirror}|${sha256}|${signature}|${archive_path}|${source_used}")
+  done
+
+  return 0
+}
+
+verify_runtime_entries() {
+  local row
+  local name
+  local version
+  local platform
+  local url_primary
+  local url_mirror
+  local sha256
+  local signature
+  local archive_path
+  local source_used
+
+  if [ "${DRY_RUN}" -eq 1 ]; then
+    log INFO "Dry-run: skipping runtime checksum verification"
+    return 0
+  fi
+
+  for row in "${RUNTIME_RESOLVED_ENTRIES[@]}"; do
+    IFS='|' read -r name version platform url_primary url_mirror sha256 signature archive_path source_used <<< "${row}"
+    if ! verify_sha256_file "${archive_path}" "${sha256}"; then
+      log ERROR "Runtime sha256 mismatch: ${name}@${version} (${archive_path})"
+      return 1
+    fi
+    log INFO "Runtime checksum verified: ${name}@${version}"
+  done
+
+  return 0
+}
+
+extract_runtime_archive() {
+  local archive_path="$1"
+  local target_dir="$2"
+
+  case "${archive_path}" in
+    *.tar.gz|*.tgz)
+      tar -xzf "${archive_path}" -C "${target_dir}"
+      ;;
+    *.tar.xz)
+      tar -xJf "${archive_path}" -C "${target_dir}"
+      ;;
+    *.zip)
+      if ! command -v unzip >/dev/null 2>&1; then
+        log ERROR "unzip is required for archive: ${archive_path}"
+        return 1
+      fi
+      unzip -q "${archive_path}" -d "${target_dir}"
+      ;;
+    *)
+      cp "${archive_path}" "${target_dir}/"
+      ;;
+  esac
+}
+
+write_runtime_status_report() {
+  local mode="$1"
+  local now_iso
+  local idx
+  local row
+  local name
+  local version
+  local platform
+  local url_primary
+  local url_mirror
+  local sha256
+  local signature
+  local archive_path
+  local source_used
+
+  now_iso="$(timestamp)"
+  mkdir -p "$(dirname "${RUNTIME_STATUS_JSON}")"
+
+  {
+    printf '{\n'
+    printf '  "generated_at": "%s",\n' "$(json_escape "${now_iso}")"
+    printf '  "mode": "%s",\n' "$(json_escape "${mode}")"
+    printf '  "platform": "%s",\n' "$(json_escape "${PLATFORM_TAG}")"
+    printf '  "manifest_source": "%s",\n' "$(json_escape "${RUNTIME_MANIFEST_SOURCE}")"
+    printf '  "manifest_path": "%s",\n' "$(json_escape "${RUNTIME_MANIFEST_PATH_RESOLVED}")"
+    printf '  "wrapper_path": "%s",\n' "$(json_escape "${RUNTIME_WRAPPER_PATH}")"
+    printf '  "global_mutation_safe": true,\n'
+    printf '  "artifacts": [\n'
+    for idx in "${!RUNTIME_RESOLVED_ENTRIES[@]}"; do
+      row="${RUNTIME_RESOLVED_ENTRIES[$idx]}"
+      IFS='|' read -r name version platform url_primary url_mirror sha256 signature archive_path source_used <<< "${row}"
+      printf '    {"name":"%s","version":"%s","platform":"%s","sha256":"%s","source":"%s","cache":"%s"}' \
+        "$(json_escape "${name}")" \
+        "$(json_escape "${version}")" \
+        "$(json_escape "${platform}")" \
+        "$(json_escape "${sha256}")" \
+        "$(json_escape "${source_used}")" \
+        "$(json_escape "${archive_path}")"
+      if [ "${idx}" -lt "$((${#RUNTIME_RESOLVED_ENTRIES[@]} - 1))" ]; then
+        printf ','
+      fi
+      printf '\n'
+    done
+    printf '  ]\n'
+    printf '}\n'
+  } > "${RUNTIME_STATUS_JSON}"
+}
+
+prepare_runtime_entries() {
+  local row
+  local name
+  local version
+  local platform
+  local url_primary
+  local url_mirror
+  local sha256
+  local signature
+  local archive_path
+  local source_used
+  local component_dir
+  local bin_dir
+  local lib_dir
+  local runtime_bin_paths=()
+  local runtime_lib_paths=()
+  local path_prefix
+  local lib_prefix
+  local marker_file
+
+  if [ "${DRY_RUN}" -eq 1 ]; then
+    RUNTIME_WRAPPER_PATH="${RUNTIME_BIN_DIR}/vcp-runtime-exec"
+    log INFO "Dry-run: would prepare runtime wrapper ${RUNTIME_WRAPPER_PATH}"
+    return 0
+  fi
+
+  mkdir -p "${RUNTIME_COMPONENTS_DIR}" "${RUNTIME_BIN_DIR}"
+
+  for row in "${RUNTIME_RESOLVED_ENTRIES[@]}"; do
+    IFS='|' read -r name version platform url_primary url_mirror sha256 signature archive_path source_used <<< "${row}"
+    component_dir="${RUNTIME_COMPONENTS_DIR}/${name}/${version}"
+    marker_file="${component_dir}/.ready-sha256"
+
+    if [ -f "${marker_file}" ] && [ "$(cat "${marker_file}" 2>/dev/null || true)" = "${sha256}" ]; then
+      log INFO "Runtime component already prepared: ${name}@${version}"
+    else
+      rm -rf "${component_dir}"
+      mkdir -p "${component_dir}"
+      extract_runtime_archive "${archive_path}" "${component_dir}" || return 1
+      printf '%s\n' "${sha256}" > "${marker_file}"
+    fi
+
+    bin_dir=""
+    if [ -d "${component_dir}/bin" ]; then
+      bin_dir="${component_dir}/bin"
+    else
+      bin_dir="$(find "${component_dir}" -maxdepth 4 -type d -name bin | head -n 1 || true)"
+    fi
+    if [ -n "${bin_dir}" ]; then
+      runtime_bin_paths+=("${bin_dir}")
+    fi
+
+    lib_dir=""
+    lib_dir="$(find "${component_dir}" -maxdepth 4 -type d \( -name lib -o -name lib64 \) | head -n 1 || true)"
+    if [ -n "${lib_dir}" ]; then
+      runtime_lib_paths+=("${lib_dir}")
+    fi
+  done
+
+  path_prefix="$(join_by_colon "${runtime_bin_paths[@]}")"
+  lib_prefix="$(join_by_colon "${runtime_lib_paths[@]}")"
+  RUNTIME_WRAPPER_PATH="${RUNTIME_BIN_DIR}/vcp-runtime-exec"
+
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -euo pipefail\n'
+    printf 'PATH_PREFIX=%q\n' "${path_prefix}"
+    printf 'LIB_PREFIX=%q\n' "${lib_prefix}"
+    printf 'if [ -n "${PATH_PREFIX}" ]; then\n'
+    printf '  export PATH="${PATH_PREFIX}:${PATH}"\n'
+    printf 'fi\n'
+    printf 'if [ -n "${LIB_PREFIX}" ]; then\n'
+    printf '  export LD_LIBRARY_PATH="${LIB_PREFIX}:${LD_LIBRARY_PATH:-}"\n'
+    printf 'fi\n'
+    printf 'if [ "${1:-}" = "--command" ]; then\n'
+    printf '  shift\n'
+    printf 'fi\n'
+    printf 'if [ "$#" -eq 0 ]; then\n'
+    printf '  echo "Usage: $0 --command <command-string>" >&2\n'
+    printf '  exit 2\n'
+    printf 'fi\n'
+    printf 'exec bash -lc "$*"\n'
+  } > "${RUNTIME_WRAPPER_PATH}"
+  chmod +x "${RUNTIME_WRAPPER_PATH}"
+
+  {
+    printf 'RUNTIME_MODE=%q\n' "${RUNTIME_MODE}"
+    printf 'RUNTIME_PLATFORM=%q\n' "${PLATFORM_TAG}"
+    printf 'RUNTIME_MANIFEST_SOURCE=%q\n' "${RUNTIME_MANIFEST_SOURCE}"
+    printf 'RUNTIME_MANIFEST_PATH=%q\n' "${RUNTIME_MANIFEST_PATH_RESOLVED}"
+    printf 'RUNTIME_WRAPPER_PATH=%q\n' "${RUNTIME_WRAPPER_PATH}"
+    printf 'RUNTIME_GLOBAL_MUTATION_SAFE=%q\n' "1"
+  } > "${RUNTIME_STATE_FILE}"
+
+  write_runtime_status_report "${RUNTIME_MODE}"
+  return 0
+}
+
+run_runtime_bootstrap() {
+  if [ "${RUNTIME_MODE}" != "portable" ]; then
+    log INFO "Runtime mode is system; skipping portable runtime bootstrap."
+    return 0
+  fi
+
+  write_state "${SESSION_FILE}" "S25_RUNTIME_PLAN" "running" "runtime-manifest-resolve"
+  if ! resolve_runtime_manifest_path; then
+    write_state "${SESSION_FILE}" "S25_RUNTIME_PLAN" "failed" "manifest-resolve-failed"
+    return 1
+  fi
+  if ! parse_runtime_manifest "${RUNTIME_MANIFEST_PATH_RESOLVED}"; then
+    write_state "${SESSION_FILE}" "S25_RUNTIME_PLAN" "failed" "manifest-parse-failed"
+    return 1
+  fi
+  if [ "${DRY_RUN}" -eq 0 ]; then
+    RUNTIME_MANIFEST_LOCK_FILE="${RUNTIME_MANIFESTS_DIR}/runtime-manifest-${SESSION_ID}.lock.txt"
+    cp "${RUNTIME_MANIFEST_PATH_RESOLVED}" "${RUNTIME_MANIFEST_LOCK_FILE}"
+  fi
+  write_state "${SESSION_FILE}" "S25_RUNTIME_PLAN" "success" "manifest-ready"
+
+  write_state "${SESSION_FILE}" "S26_RUNTIME_FETCH" "running" "runtime-download"
+  if ! fetch_runtime_entries; then
+    write_state "${SESSION_FILE}" "S26_RUNTIME_FETCH" "failed" "runtime-download-failed"
+    return 1
+  fi
+  write_state "${SESSION_FILE}" "S26_RUNTIME_FETCH" "success" "runtime-downloaded"
+
+  write_state "${SESSION_FILE}" "S27_RUNTIME_VERIFY" "running" "runtime-checksum"
+  if ! verify_runtime_entries; then
+    write_state "${SESSION_FILE}" "S27_RUNTIME_VERIFY" "failed" "runtime-checksum-failed"
+    return 1
+  fi
+  write_state "${SESSION_FILE}" "S27_RUNTIME_VERIFY" "success" "runtime-verified"
+
+  write_state "${SESSION_FILE}" "S28_RUNTIME_PREPARE" "running" "runtime-prepare"
+  if ! prepare_runtime_entries; then
+    write_state "${SESSION_FILE}" "S28_RUNTIME_PREPARE" "failed" "runtime-prepare-failed"
+    return 1
+  fi
+  write_state "${SESSION_FILE}" "S28_RUNTIME_PREPARE" "success" "runtime-ready"
+  return 0
+}
+
+load_runtime_state() {
+  if [ ! -f "${RUNTIME_STATE_FILE}" ]; then
+    return 1
+  fi
+  # shellcheck disable=SC1090
+  source "${RUNTIME_STATE_FILE}"
+  return 0
+}
+
+build_runtime_wrapped_command() {
+  local wrapper_path="$1"
+  local raw_cmd="$2"
+  printf '%q --command %q' "${wrapper_path}" "${raw_cmd}"
 }
 
 safe_pid_running() {
@@ -705,6 +1374,18 @@ write_install_report() {
     printf '  "workspace_root": "%s",\n' "$(json_escape "${workspace_root}")"
     printf '  "toolbox_dir": "%s",\n' "$(json_escape "${toolbox_dir}")"
     printf '  "chat_dir": "%s",\n' "$(json_escape "${chat_dir}")"
+    printf '  "runtime": {\n'
+    printf '    "mode": "%s",\n' "$(json_escape "${RUNTIME_MODE}")"
+    printf '    "manifest_source": "%s",\n' "$(json_escape "${RUNTIME_MANIFEST_SOURCE}")"
+    printf '    "manifest_path": "%s",\n' "$(json_escape "${RUNTIME_MANIFEST_PATH_RESOLVED}")"
+    printf '    "wrapper_path": "%s"\n' "$(json_escape "${RUNTIME_WRAPPER_PATH}")"
+    printf '  },\n'
+    printf '  "global_mutation": {\n'
+    printf '    "path_modified": false,\n'
+    printf '    "global_npm_install": false,\n'
+    printf '    "global_pip_install": false,\n'
+    printf '    "safe_default": true\n'
+    printf '  },\n'
     printf '  "warnings": [\n'
     for idx in "${!INSTALL_WARNINGS[@]}"; do
       printf '    "%s"' "$(json_escape "${INSTALL_WARNINGS[$idx]}")"
@@ -751,6 +1432,10 @@ write_install_report() {
     printf -- '- Workspace: `%s`\n' "${workspace_root}"
     printf -- '- VCPToolBox: `%s`\n' "${toolbox_dir}"
     printf -- '- VCPChat: `%s`\n' "${chat_dir}"
+    printf -- '- Runtime Mode: `%s`\n' "${RUNTIME_MODE}"
+    printf -- '- Runtime Manifest: `%s`\n' "${RUNTIME_MANIFEST_SOURCE:-<unset>}"
+    printf -- '- Runtime Wrapper: `%s`\n' "${RUNTIME_WRAPPER_PATH:-<unset>}"
+    printf -- '- Global Mutation Safe: `true`\n'
     printf '\n## Steps\n\n'
     for step_row in "${INSTALL_STEPS[@]}"; do
       step_id="${step_row%%|*}"
@@ -788,6 +1473,9 @@ save_launcher_config() {
   local chat_cwd="$4"
   local chat_cmd="$5"
   local startup_delay="$6"
+  local runtime_mode_cfg="${7:-system}"
+  local runtime_wrapper_cfg="${8:-}"
+  local runtime_manifest_cfg="${9:-}"
 
   if [ "${DRY_RUN}" -eq 1 ]; then
     log INFO "Dry-run: skip writing launcher config (${CONFIG_FILE})"
@@ -796,7 +1484,7 @@ save_launcher_config() {
 
   {
     printf '# Generated by vcp-installer at %s\n' "$(timestamp)"
-    printf 'CONFIG_VERSION=%q\n' "1"
+    printf 'CONFIG_VERSION=%q\n' "2"
     printf 'INITIALIZED_AT=%q\n' "$(timestamp)"
     printf 'WORKSPACE_ROOT=%q\n' "${workspace_root}"
     printf 'BACKEND_CWD=%q\n' "${backend_cwd}"
@@ -804,6 +1492,9 @@ save_launcher_config() {
     printf 'CHAT_CWD=%q\n' "${chat_cwd}"
     printf 'CHAT_CMD=%q\n' "${chat_cmd}"
     printf 'STARTUP_DELAY_CFG=%q\n' "${startup_delay}"
+    printf 'RUNTIME_MODE_CFG=%q\n' "${runtime_mode_cfg}"
+    printf 'RUNTIME_WRAPPER_CFG=%q\n' "${runtime_wrapper_cfg}"
+    printf 'RUNTIME_MANIFEST_CFG=%q\n' "${runtime_manifest_cfg}"
   } > "${CONFIG_FILE}"
 
   chmod 600 "${CONFIG_FILE}"
@@ -820,6 +1511,16 @@ load_launcher_config() {
   if [ -z "${BACKEND_CWD:-}" ] || [ -z "${BACKEND_CMD:-}" ] || [ -z "${CHAT_CWD:-}" ] || [ -z "${CHAT_CMD:-}" ]; then
     log ERROR "Launcher config is incomplete: ${CONFIG_FILE}"
     return 2
+  fi
+
+  if [ -z "${RUNTIME_MODE_CFG:-}" ]; then
+    RUNTIME_MODE_CFG="system"
+  fi
+  if [ -z "${RUNTIME_WRAPPER_CFG:-}" ]; then
+    RUNTIME_WRAPPER_CFG=""
+  fi
+  if [ -z "${RUNTIME_MANIFEST_CFG:-}" ]; then
+    RUNTIME_MANIFEST_CFG=""
   fi
 
   return 0
@@ -1165,7 +1866,10 @@ run_install_flow() {
       "${backend_cmd}" \
       "${chat_dir}" \
       "${chat_cmd}" \
-      "${STARTUP_DELAY}"
+      "${STARTUP_DELAY}" \
+      "system" \
+      "" \
+      ""
     if [ "${DRY_RUN}" -eq 1 ]; then
       add_install_step "S80_START_STACK" "warning" "dry-run skipped stack startup"
     else
@@ -1191,7 +1895,11 @@ run_install_flow() {
 
 run_init() {
   write_state "${SESSION_FILE}" "S20_INITIALIZE" "running" "collect-launch-profile"
-  collect_init_values
+  if [ "${INIT_RESUME_MODE}" -eq 1 ]; then
+    log INFO "Resume mode: loading init values from snapshot."
+  else
+    collect_init_values
+  fi
   validate_startup_delay
 
   if [ -z "${BACKEND_CMD_VAL}" ] || [ -z "${CHAT_CMD_VAL}" ]; then
@@ -1200,26 +1908,46 @@ run_init() {
     exit 22
   fi
 
+  save_init_profile_snapshot
+
+  if ! run_runtime_bootstrap; then
+    log ERROR "Initialization failed during runtime bootstrap."
+    exit 25
+  fi
+
+  if [ "${RUNTIME_MODE}" != "portable" ]; then
+    RUNTIME_WRAPPER_PATH=""
+  fi
+
   save_launcher_config \
     "${WORKSPACE_ROOT_VAL}" \
     "${BACKEND_CWD_VAL}" \
     "${BACKEND_CMD_VAL}" \
     "${CHAT_CWD_VAL}" \
     "${CHAT_CMD_VAL}" \
-    "${STARTUP_DELAY}"
+    "${STARTUP_DELAY}" \
+    "${RUNTIME_MODE}" \
+    "${RUNTIME_WRAPPER_PATH}" \
+    "${RUNTIME_MANIFEST_SOURCE}"
 
   log INFO "Initialization completed. Config: ${CONFIG_FILE}"
   write_state "${SESSION_FILE}" "S20_INITIALIZE" "success" "config-saved"
 }
 
 run_start_stack() {
+  local delay_to_use
+  local runtime_mode_to_use
+  local runtime_wrapper_to_use
+  local backend_cmd_to_use
+  local chat_cmd_to_use
+
   if ! load_launcher_config; then
     log ERROR "Launcher config not found: ${CONFIG_FILE}"
     log INFO "Run init first: ${0} init --gui"
     exit 23
   fi
 
-  local delay_to_use="${STARTUP_DELAY}"
+  delay_to_use="${STARTUP_DELAY}"
   if [ -n "${STARTUP_DELAY_CFG:-}" ] && [ "${STARTUP_DELAY}" = "2" ]; then
     delay_to_use="${STARTUP_DELAY_CFG}"
   fi
@@ -1228,16 +1956,39 @@ run_start_stack() {
     delay_to_use="2"
   fi
 
-  write_state "${SESSION_FILE}" "S60_START_STACK" "running" "starting-backend-chat"
-  log INFO "Starting stack from config: ${CONFIG_FILE}"
+  runtime_mode_to_use="${RUNTIME_MODE_CFG:-portable}"
+  if [ "${RUNTIME_MODE_CLI_SET}" -eq 1 ]; then
+    runtime_mode_to_use="${RUNTIME_MODE}"
+  fi
+  runtime_wrapper_to_use="${RUNTIME_WRAPPER_CFG:-}"
+  if [ -z "${runtime_wrapper_to_use}" ] && [ -n "${RUNTIME_WRAPPER_PATH:-}" ]; then
+    runtime_wrapper_to_use="${RUNTIME_WRAPPER_PATH}"
+  fi
+  if [ -z "${runtime_wrapper_to_use}" ] && load_runtime_state; then
+    runtime_wrapper_to_use="${RUNTIME_WRAPPER_PATH:-${RUNTIME_WRAPPER_CFG:-}}"
+  fi
 
-  start_component "backend" "${BACKEND_CWD}" "${BACKEND_CMD}"
+  backend_cmd_to_use="${BACKEND_CMD}"
+  chat_cmd_to_use="${CHAT_CMD}"
+  if [ "${runtime_mode_to_use}" = "portable" ]; then
+    if [ -z "${runtime_wrapper_to_use}" ] || [ ! -x "${runtime_wrapper_to_use}" ]; then
+      log ERROR "Portable runtime wrapper is missing. Run init first or pass --runtime-mode system."
+      exit 25
+    fi
+    backend_cmd_to_use="$(build_runtime_wrapped_command "${runtime_wrapper_to_use}" "${BACKEND_CMD}")"
+    chat_cmd_to_use="$(build_runtime_wrapped_command "${runtime_wrapper_to_use}" "${CHAT_CMD}")"
+  fi
+
+  write_state "${SESSION_FILE}" "S60_START_STACK" "running" "starting-backend-chat"
+  log INFO "Starting stack from config: ${CONFIG_FILE} (runtime_mode=${runtime_mode_to_use})"
+
+  start_component "backend" "${BACKEND_CWD}" "${backend_cmd_to_use}"
 
   if [ "${DRY_RUN}" -eq 0 ] && [ "${delay_to_use}" -gt 0 ]; then
     sleep "${delay_to_use}"
   fi
 
-  start_component "chat" "${CHAT_CWD}" "${CHAT_CMD}"
+  start_component "chat" "${CHAT_CWD}" "${chat_cmd_to_use}"
 
   write_state "${SESSION_FILE}" "S60_START_STACK" "success" "stack-started"
   log INFO "Stack startup finished"
@@ -1251,14 +2002,39 @@ run_stop_stack() {
 }
 
 run_status() {
+  local runtime_mode_to_show="portable"
+  local runtime_wrapper_to_show=""
+  local runtime_manifest_to_show=""
+  local runtime_health="missing"
+
   if [ -f "${CONFIG_FILE}" ]; then
     # shellcheck disable=SC1090
     source "${CONFIG_FILE}"
     printf 'Config: %s\n' "${CONFIG_FILE}"
     printf 'Workspace: %s\n' "${WORKSPACE_ROOT:-<unset>}"
+    runtime_mode_to_show="${RUNTIME_MODE_CFG:-portable}"
+    runtime_wrapper_to_show="${RUNTIME_WRAPPER_CFG:-}"
+    runtime_manifest_to_show="${RUNTIME_MANIFEST_CFG:-}"
   else
     printf 'Config: <not initialized>\n'
   fi
+
+  if [ -z "${runtime_wrapper_to_show}" ] && load_runtime_state; then
+    runtime_wrapper_to_show="${RUNTIME_WRAPPER_PATH:-${runtime_wrapper_to_show}}"
+    runtime_manifest_to_show="${RUNTIME_MANIFEST_SOURCE:-${runtime_manifest_to_show}}"
+  fi
+  if [ "${runtime_mode_to_show}" = "system" ]; then
+    runtime_health="n/a"
+  elif [ -n "${runtime_wrapper_to_show}" ] && [ -x "${runtime_wrapper_to_show}" ]; then
+    runtime_health="ready"
+  else
+    runtime_health="missing"
+  fi
+
+  printf 'RuntimeMode: %s\n' "${runtime_mode_to_show}"
+  printf 'RuntimeWrapper: %s\n' "${runtime_wrapper_to_show:-<unset>}"
+  printf 'RuntimeManifest: %s\n' "${runtime_manifest_to_show:-<unset>}"
+  printf 'RuntimeHealth: %s\n' "${runtime_health}"
 
   show_component_status "backend"
   show_component_status "chat"
@@ -1266,12 +2042,44 @@ run_status() {
 
 run_reset() {
   if [ "${DRY_RUN}" -eq 1 ]; then
-    log INFO "Dry-run: would remove launcher config and runtime state under ${INSTALLER_HOME}"
+    if [ "${RESET_RUNTIME}" -eq 1 ]; then
+      log INFO "Dry-run: would remove launcher config, pid files, and runtime under ${INSTALLER_HOME}"
+    else
+      log INFO "Dry-run: would remove launcher config and runtime state under ${INSTALLER_HOME}"
+    fi
     return
   fi
 
   rm -f "${CONFIG_FILE}" "${RUN_DIR}"/*.pid
+  rm -f "${STATE_DIR}/init-session-"*.env 2>/dev/null || true
+  if [ "${RESET_RUNTIME}" -eq 1 ]; then
+    rm -rf "${RUNTIME_ROOT}"
+  fi
   log INFO "Reset completed. Config and pid files removed."
+}
+
+run_resume() {
+  local last_step
+  last_step="$(read_state_json_field "${SESSION_FILE}" "step_id")"
+
+  case "${last_step}" in
+    S20_INITIALIZE|S25_RUNTIME_PLAN|S26_RUNTIME_FETCH|S27_RUNTIME_VERIFY|S28_RUNTIME_PREPARE)
+      if ! load_init_profile_snapshot; then
+        log ERROR "Cannot resume init/runtime flow: missing init snapshot ($(runtime_init_profile_file))."
+        log INFO "Run init again with explicit args."
+        exit 32
+      fi
+      INIT_RESUME_MODE=1
+      log INFO "Resuming init/runtime flow from step ${last_step}"
+      run_init
+      if [ "${NO_START_AFTER_INIT}" -eq 0 ]; then
+        run_start_stack
+      fi
+      ;;
+    *)
+      run_install_flow "${SESSION_FILE}"
+      ;;
+  esac
 }
 
 while [ $# -gt 0 ]; do
@@ -1310,6 +2118,19 @@ while [ $# -gt 0 ]; do
       ;;
     --no-start-after-init)
       NO_START_AFTER_INIT=1
+      shift
+      ;;
+    --runtime-mode)
+      RUNTIME_MODE="${2:-}"
+      RUNTIME_MODE_CLI_SET=1
+      shift 2
+      ;;
+    --runtime-manifest)
+      RUNTIME_MANIFEST_ARG="${2:-}"
+      shift 2
+      ;;
+    --reset-runtime)
+      RESET_RUNTIME=1
       shift
       ;;
     --workspace-root)
@@ -1440,6 +2261,9 @@ if [ "${HEADLESS}" -eq 1 ]; then
 fi
 
 validate_vcp_port
+if ! validate_runtime_mode; then
+  exit 2
+fi
 
 if [ "${COMMAND}" = "auto" ]; then
   if [ "${DRY_RUN}" -eq 1 ] || [ "${SIMULATE_GUI_STEP}" -eq 1 ]; then
@@ -1474,8 +2298,11 @@ fi
 log INFO "Mode: ${MODE} (headless=${HEADLESS}, dry_run=${DRY_RUN}, command=${COMMAND})"
 
 case "${COMMAND}" in
-  install|resume)
+  install)
     run_install_flow "${SESSION_FILE}"
+    ;;
+  resume)
+    run_resume
     ;;
   init)
     run_init

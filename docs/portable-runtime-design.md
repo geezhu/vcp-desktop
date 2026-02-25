@@ -1,9 +1,9 @@
 # Portable Runtime 设计说明
 
-**文档版本**: 0.2.0  
+**文档版本**: 0.3.0  
 **创建日期**: 2026-02-25  
 **更新日期**: 2026-02-25  
-**状态**: Draft（Decision Confirmed）
+**状态**: In Progress（Core Implemented）
 
 ---
 
@@ -90,7 +90,7 @@
 1. 默认不调用系统包管理器做全局安装。
 2. 默认不写入 `/usr`、`/etc`、系统级 shell profile。
 3. 所有运行时注入仅在 installer 启动的子进程内生效。
-4. `reset --runtime`（后续实现）应支持私有运行时整目录回收。
+4. `reset --reset-runtime` 支持私有运行时整目录回收。
 
 ---
 
@@ -111,3 +111,14 @@
 2. `start` 默认使用私有运行时启动，不依赖系统全局 Node/Python。
 3. 删除 `VCP_INSTALLER_HOME/runtime` 后可重新 `init` 恢复。
 4. 默认流程不会改动系统全局 PATH 与全局 npm/pip 包。
+
+---
+
+## 11. 当前实现状态（2026-02-25）
+
+1. 已实现 `S25/S26/S27/S28` 状态落盘与 `resume` 恢复路径。
+2. 已实现 manifest 解析、下载续传、SHA256 校验、wrapper 生成。
+3. 已实现 `--runtime-mode portable|system`，`start` 支持 portable wrapper 启动。
+4. 已实现 `status` 运行时健康输出与 `reset --reset-runtime` 清理。
+5. 已实现 smoke 与回归脚本覆盖（mock 下载、失败恢复、镜像回退）。
+6. 待阻塞项：发布仓库与镜像仓库地址未最终确认，默认 manifest 仍为模板占位。

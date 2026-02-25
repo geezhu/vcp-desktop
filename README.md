@@ -25,10 +25,12 @@ chmod +x bin/vcp-installer scripts/*.sh
 ./bin/vcp-installer --cli --dry-run
 ./bin/vcp-installer resume --cli --dry-run
 ./bin/vcp-installer --headless --dry-run --simulate-gui-step
-./bin/vcp-installer init --cli --yes --workspace-root ~/vcp --backend-cmd "node server.js" --chat-cmd "npm run start"
+./bin/vcp-installer init --cli --yes --runtime-mode portable --runtime-manifest ./manifests/runtime-manifest-linux-x86_64.txt --workspace-root ~/vcp --backend-cmd "node server.js" --chat-cmd "npm run start"
+./bin/vcp-installer init --cli --yes --runtime-mode system --workspace-root ~/vcp --backend-cmd "node server.js" --chat-cmd "npm run start"
 ./bin/vcp-installer start
 ./bin/vcp-installer status
 ./bin/vcp-installer stop
+./bin/vcp-installer reset --reset-runtime
 ```
 
 ## First-Run Behavior
@@ -69,6 +71,10 @@ By default, local build outputs are generated in `dist/` and temporary AppImage 
 1. Confirmed default strategy: bootstrap dependencies in a private runtime during initialization.
 2. Default mode avoids global package installation and avoids modifying system PATH.
 3. Runtime artifacts are expected under installer user scope and should be removable as a whole.
+4. Manifest template path: `manifests/runtime-manifest-linux-x86_64.txt`.
+5. Validate manifest: `./scripts/validate-runtime-manifest.sh manifests/runtime-manifest-linux-x86_64.txt linux-x86_64`.
+6. Network regression (fallback/offline/resume): `./scripts/runtime-regression.sh`.
+7. The default manifest is a template; replace artifact URLs and SHA256 values before production init.
 
 ## Design Docs
 
@@ -76,6 +82,7 @@ By default, local build outputs are generated in `dist/` and temporary AppImage 
 2. Linux AIO design: `docs/linux-aio-design.md`
 3. Portable runtime design: `docs/portable-runtime-design.md`
 4. Portable runtime task list: `docs/portable-runtime-task-list.md`
+5. Runtime network regression: `docs/runtime-network-regression.md`
 
 ## Release Signature
 

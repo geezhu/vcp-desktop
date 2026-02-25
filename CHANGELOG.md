@@ -16,6 +16,11 @@ All notable changes to this project will be documented in this file.
 - Added portable-runtime design/task documentation for phased execution.
 - Synced Linux AIO design with FR-010 portable runtime state machine and acceptance constraints.
 - Expanded portable runtime task breakdown with explicit implementation and release gates.
+- Portable runtime bootstrap implementation in `init` (`S25/S26/S27/S28`: plan/fetch/verify/prepare).
+- Runtime manifest parser, schema validator script, and manifest template (`manifests/runtime-manifest-linux-x86_64.txt`).
+- Runtime wrapper generation and start-time isolation (`PATH`/`LD_LIBRARY_PATH`) for portable mode.
+- Runtime-aware status/reset/resume paths and install report `global_mutation` gate fields.
+- Smoke and regression coverage for checksum-fail -> resume recovery and source fallback scenarios.
 
 ### Changed
 

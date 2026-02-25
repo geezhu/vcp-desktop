@@ -1,0 +1,9 @@
+# Runtime manifest schema:
+# artifact|<name>|<version>|<platform>|<url_primary>|<url_mirror>|<sha256>|<signature>
+# - platform should match installer platform tag (for Linux x86_64: linux-x86_64) or all
+# - url_mirror/signature can be '-'
+manifest_version|1
+
+# Replace these example records with real release assets before production use.
+artifact|node|20.0.0|linux-x86_64|file:///REPLACE_ME/node-runtime.tar.xz|-|0000000000000000000000000000000000000000000000000000000000000000|-
+artifact|python|3.11.0|linux-x86_64|file:///REPLACE_ME/python-runtime.tar.xz|-|1111111111111111111111111111111111111111111111111111111111111111|-

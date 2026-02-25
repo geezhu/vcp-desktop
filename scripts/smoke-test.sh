@@ -4,8 +4,12 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INSTALLER="${ROOT_DIR}/bin/vcp-installer"
 STATE_DIR="${ROOT_DIR}/.local-build-env/smoke-state"
+HEADLESS_INIT_HOME="${ROOT_DIR}/.local-build-env/smoke-headless-init-home"
+HEADLESS_INIT_STATE="${ROOT_DIR}/.local-build-env/smoke-headless-init-state"
 TMP_DIR="${ROOT_DIR}/.local-build-env/smoke-tmp"
 RUNTIME_DIR="${ROOT_DIR}/.local-build-env/smoke-runtime"
+RUNTIME_ASSETS_DIR="${ROOT_DIR}/.local-build-env/smoke-runtime-assets"
+RUNTIME_WORKSPACE="${ROOT_DIR}/.local-build-env/smoke-runtime-workspace"
 INSTALLER_HOME="${ROOT_DIR}/.local-build-env/smoke-home"
 INSTALL_WORKSPACE="${ROOT_DIR}/.local-build-env/smoke-install-workspace"
 
@@ -14,8 +18,26 @@ if [ ! -x "${INSTALLER}" ]; then
   exit 1
 fi
 
-rm -rf "${STATE_DIR}" "${TMP_DIR}" "${RUNTIME_DIR}" "${INSTALLER_HOME}" "${INSTALL_WORKSPACE}"
-mkdir -p "${STATE_DIR}" "${TMP_DIR}" "${RUNTIME_DIR}/backend" "${RUNTIME_DIR}/chat"
+rm -rf \
+  "${STATE_DIR}" \
+  "${TMP_DIR}" \
+  "${RUNTIME_DIR}" \
+  "${RUNTIME_ASSETS_DIR}" \
+  "${RUNTIME_WORKSPACE}" \
+  "${HEADLESS_INIT_HOME}" \
+  "${HEADLESS_INIT_STATE}" \
+  "${INSTALLER_HOME}" \
+  "${INSTALL_WORKSPACE}"
+mkdir -p \
+  "${STATE_DIR}" \
+  "${TMP_DIR}" \
+  "${RUNTIME_DIR}/backend" \
+  "${RUNTIME_DIR}/chat" \
+  "${RUNTIME_ASSETS_DIR}" \
+  "${RUNTIME_WORKSPACE}/backend" \
+  "${RUNTIME_WORKSPACE}/chat" \
+  "${HEADLESS_INIT_HOME}" \
+  "${HEADLESS_INIT_STATE}"
 
 cat > "${RUNTIME_DIR}/backend/start-backend.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -30,6 +52,50 @@ set -euo pipefail
 sleep 120
 EOF
 chmod +x "${RUNTIME_DIR}/chat/start-chat.sh"
+
+mkdir -p "${RUNTIME_ASSETS_DIR}/node/bin" "${RUNTIME_ASSETS_DIR}/python/bin"
+cat > "${RUNTIME_ASSETS_DIR}/node/bin/node" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "v20.99.0-smoke"
+EOF
+chmod +x "${RUNTIME_ASSETS_DIR}/node/bin/node"
+
+cat > "${RUNTIME_ASSETS_DIR}/python/bin/python3" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "Python 3.11.99-smoke"
+EOF
+chmod +x "${RUNTIME_ASSETS_DIR}/python/bin/python3"
+
+tar -cJf "${RUNTIME_ASSETS_DIR}/node-runtime.tar.xz" -C "${RUNTIME_ASSETS_DIR}/node" .
+tar -cJf "${RUNTIME_ASSETS_DIR}/python-runtime.tar.xz" -C "${RUNTIME_ASSETS_DIR}/python" .
+
+node_sha="$(sha256sum "${RUNTIME_ASSETS_DIR}/node-runtime.tar.xz" | awk '{print $1}')"
+python_sha="$(sha256sum "${RUNTIME_ASSETS_DIR}/python-runtime.tar.xz" | awk '{print $1}')"
+bad_python_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+manifest_active="${TMP_DIR}/runtime-manifest-active.txt"
+cat > "${manifest_active}" <<EOF
+manifest_version|1
+artifact|node|20.99.0|linux-x86_64|file://${RUNTIME_ASSETS_DIR}/node-runtime.tar.xz|-|${node_sha}|-
+artifact|python|3.11.99|linux-x86_64|file://${RUNTIME_ASSETS_DIR}/python-runtime.tar.xz|-|${bad_python_sha}|-
+EOF
+
+cat > "${RUNTIME_WORKSPACE}/backend/start-backend.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+node --version >/dev/null
+sleep 120
+EOF
+chmod +x "${RUNTIME_WORKSPACE}/backend/start-backend.sh"
+
+cat > "${RUNTIME_WORKSPACE}/chat/start-chat.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+python3 --version >/dev/null
+sleep 120
+EOF
+chmod +x "${RUNTIME_WORKSPACE}/chat/start-chat.sh"
 
 mkdir -p "${INSTALL_WORKSPACE}/VCPToolBox" "${INSTALL_WORKSPACE}/VCPChat"
 
@@ -74,6 +140,73 @@ if [ "${actual_version}" != "${expected_version}" ]; then
 fi
 VCP_INSTALLER_STATE_DIR="${STATE_DIR}" "${INSTALLER}" --cli --dry-run > "${TMP_DIR}/cli.log"
 VCP_INSTALLER_STATE_DIR="${STATE_DIR}" "${INSTALLER}" resume --cli --dry-run > "${TMP_DIR}/resume.log"
+
+set +e
+VCP_INSTALLER_HOME="${INSTALLER_HOME}" \
+VCP_INSTALLER_STATE_DIR="${STATE_DIR}" \
+"${INSTALLER}" init --cli --yes --no-start-after-init \
+  --runtime-mode portable \
+  --runtime-manifest "${manifest_active}" \
+  --workspace-root "${RUNTIME_WORKSPACE}" \
+  --backend-cwd "${RUNTIME_WORKSPACE}/backend" \
+  --backend-cmd "./start-backend.sh" \
+  --chat-cwd "${RUNTIME_WORKSPACE}/chat" \
+  --chat-cmd "./start-chat.sh" \
+  --startup-delay 0 > "${TMP_DIR}/runtime-init-fail.log" 2>&1
+runtime_init_rc=$?
+set -e
+
+if [ "${runtime_init_rc}" -eq 0 ]; then
+  echo "Expected runtime init to fail on checksum mismatch" >&2
+  cat "${TMP_DIR}/runtime-init-fail.log" >&2
+  exit 1
+fi
+
+if command -v rg >/dev/null 2>&1; then
+  rg -q "S27_RUNTIME_VERIFY" "${STATE_DIR}"/session-*.json
+else
+  grep -q "S27_RUNTIME_VERIFY" "${STATE_DIR}"/session-*.json
+fi
+
+cat > "${manifest_active}" <<EOF
+manifest_version|1
+artifact|node|20.99.0|linux-x86_64|file://${RUNTIME_ASSETS_DIR}/node-runtime.tar.xz|-|${node_sha}|-
+artifact|python|3.11.99|linux-x86_64|file://${RUNTIME_ASSETS_DIR}/python-runtime.tar.xz|-|${python_sha}|-
+EOF
+
+VCP_INSTALLER_HOME="${INSTALLER_HOME}" \
+VCP_INSTALLER_STATE_DIR="${STATE_DIR}" \
+"${INSTALLER}" resume --cli --yes --no-start-after-init > "${TMP_DIR}/runtime-resume.log"
+
+runtime_wrapper="${INSTALLER_HOME}/runtime/bin/vcp-runtime-exec"
+if [ ! -x "${runtime_wrapper}" ]; then
+  echo "Expected runtime wrapper missing: ${runtime_wrapper}" >&2
+  exit 1
+fi
+
+VCP_INSTALLER_HOME="${INSTALLER_HOME}" \
+VCP_INSTALLER_STATE_DIR="${STATE_DIR}" \
+"${INSTALLER}" start > "${TMP_DIR}/runtime-start.log"
+
+VCP_INSTALLER_HOME="${INSTALLER_HOME}" \
+VCP_INSTALLER_STATE_DIR="${STATE_DIR}" \
+"${INSTALLER}" status > "${TMP_DIR}/runtime-status.log"
+
+if command -v rg >/dev/null 2>&1; then
+  rg -q "RuntimeMode: portable" "${TMP_DIR}/runtime-status.log"
+  rg -q "RuntimeHealth: ready" "${TMP_DIR}/runtime-status.log"
+  rg -q "backend: RUNNING" "${TMP_DIR}/runtime-status.log"
+  rg -q "chat: RUNNING" "${TMP_DIR}/runtime-status.log"
+else
+  grep -q "RuntimeMode: portable" "${TMP_DIR}/runtime-status.log"
+  grep -q "RuntimeHealth: ready" "${TMP_DIR}/runtime-status.log"
+  grep -q "backend: RUNNING" "${TMP_DIR}/runtime-status.log"
+  grep -q "chat: RUNNING" "${TMP_DIR}/runtime-status.log"
+fi
+
+VCP_INSTALLER_HOME="${INSTALLER_HOME}" \
+VCP_INSTALLER_STATE_DIR="${STATE_DIR}" \
+"${INSTALLER}" stop > "${TMP_DIR}/runtime-stop.log"
 
 VCP_INSTALLER_HOME="${INSTALLER_HOME}" \
 VCP_INSTALLER_STATE_DIR="${STATE_DIR}" \
@@ -131,6 +264,14 @@ if [ ! -f "${INSTALLER_HOME}/reports/install-report-${session_id}.md" ]; then
   exit 1
 fi
 
+if command -v rg >/dev/null 2>&1; then
+  rg -q "\"global_mutation\"" "${INSTALLER_HOME}/reports/install-report-${session_id}.json"
+  rg -q "\"safe_default\": true" "${INSTALLER_HOME}/reports/install-report-${session_id}.json"
+else
+  grep -q "\"global_mutation\"" "${INSTALLER_HOME}/reports/install-report-${session_id}.json"
+  grep -q "\"safe_default\": true" "${INSTALLER_HOME}/reports/install-report-${session_id}.json"
+fi
+
 VCP_INSTALLER_HOME="${INSTALLER_HOME}" \
 VCP_INSTALLER_STATE_DIR="${STATE_DIR}" \
 "${INSTALLER}" install --cli --yes --dry-run \
@@ -171,8 +312,8 @@ else
 fi
 
 set +e
-VCP_INSTALLER_HOME="${INSTALLER_HOME}" \
-VCP_INSTALLER_STATE_DIR="${STATE_DIR}" \
+VCP_INSTALLER_HOME="${HEADLESS_INIT_HOME}" \
+VCP_INSTALLER_STATE_DIR="${HEADLESS_INIT_STATE}" \
 "${INSTALLER}" --headless > "${TMP_DIR}/headless-init-required.log" 2>&1
 headless_init_rc=$?
 set -e
@@ -200,6 +341,7 @@ fi
 VCP_INSTALLER_HOME="${INSTALLER_HOME}" \
 VCP_INSTALLER_STATE_DIR="${STATE_DIR}" \
 "${INSTALLER}" --cli --yes \
+  --runtime-mode system \
   --workspace-root "${RUNTIME_DIR}" \
   --backend-cwd "${RUNTIME_DIR}/backend" \
   --backend-cmd "./start-backend.sh" \
