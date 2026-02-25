@@ -7,7 +7,13 @@ mkdir -p "${DIST_DIR}"
 
 cd "${DIST_DIR}"
 shopt -s nullglob
-artifacts=(vcpinstaller-*.tar.gz vcpinstaller-*.AppImage)
+artifacts=(
+  vcpinstaller-*.tar.gz
+  vcpinstaller-*.AppImage
+  node-runtime-*.tar.xz
+  python-runtime-*.tar.gz
+  runtime-manifest-*.txt
+)
 
 if [ "${#artifacts[@]}" -eq 0 ]; then
   echo "No artifacts found in ${DIST_DIR}" >&2

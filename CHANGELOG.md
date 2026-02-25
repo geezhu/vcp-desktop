@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## v0.2.0 - 2026-02-25
+
 ### Added
 
 - Real install/config orchestration in `bin/vcp-installer install|resume` for `VCPToolBox` and `VCPChat`.
@@ -22,11 +24,15 @@ All notable changes to this project will be documented in this file.
 - Runtime-aware status/reset/resume paths and install report `global_mutation` gate fields.
 - Smoke and regression coverage for checksum-fail -> resume recovery and source fallback scenarios.
 - Explicit system-mode confirmation and audit logging (`--allow-system-integration`).
+- Runtime asset build script for release publishing (`scripts/build-runtime-assets.sh`).
+- Runtime manifest validator/regression scripts and baseline runtime manifest template.
 
 ### Changed
 
 - `init` default backend command now uses `node server.js` for VCPToolBox compatibility.
 - Dependency precheck now emits package-manager-aware install hints and supports strict failure mode.
+- Release workflow now uploads runtime assets and runtime manifest with signed checksum set.
+- Artifact checksum generation now includes runtime packages and runtime manifest files.
 
 ## v0.1.2 - 2026-02-24
 

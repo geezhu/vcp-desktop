@@ -46,6 +46,8 @@ chmod +x bin/vcp-installer scripts/*.sh
 ```bash
 ./scripts/build-tarball.sh
 ./scripts/build-appimage.sh
+./scripts/build-runtime-assets.sh
+./scripts/update-sha256sums.sh
 ./scripts/verify-artifacts.sh
 ```
 

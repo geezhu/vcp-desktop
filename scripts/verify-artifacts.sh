@@ -6,6 +6,7 @@ DIST_DIR="${ROOT_DIR}/dist"
 VERSION="$(tr -d '[:space:]' < "${ROOT_DIR}/VERSION")"
 TAR_PATH="${DIST_DIR}/vcpinstaller-v${VERSION}-linux-x64.tar.gz"
 APPIMAGE_PATH="${DIST_DIR}/vcpinstaller-v${VERSION}-linux-x86_64.AppImage"
+RUNTIME_MANIFEST_PATH="${DIST_DIR}/runtime-manifest-linux-x86_64.txt"
 WORK_DIR="${ROOT_DIR}/.local-build-env/artifact-verify-$(date +%s)"
 
 if [ ! -f "${TAR_PATH}" ]; then
@@ -15,6 +16,26 @@ fi
 
 if [ ! -f "${APPIMAGE_PATH}" ]; then
   echo "Missing AppImage artifact: ${APPIMAGE_PATH}" >&2
+  exit 1
+fi
+
+shopt -s nullglob
+node_runtime_files=(${DIST_DIR}/node-runtime-*-linux-x86_64.tar.xz)
+python_runtime_files=(${DIST_DIR}/python-runtime-*-linux-x86_64.tar.gz)
+shopt -u nullglob
+
+if [ "${#node_runtime_files[@]}" -lt 1 ]; then
+  echo "Missing node runtime artifact in ${DIST_DIR}" >&2
+  exit 1
+fi
+
+if [ "${#python_runtime_files[@]}" -lt 1 ]; then
+  echo "Missing python runtime artifact in ${DIST_DIR}" >&2
+  exit 1
+fi
+
+if [ ! -f "${RUNTIME_MANIFEST_PATH}" ]; then
+  echo "Missing runtime manifest artifact: ${RUNTIME_MANIFEST_PATH}" >&2
   exit 1
 fi
 
@@ -44,6 +65,10 @@ if [ "${tar_version}" != "${VERSION}" ]; then
   exit 1
 fi
 VCP_INSTALLER_STATE_DIR="${WORK_DIR}/tar-state" "${WORK_DIR}/tar/bin/vcp-installer" --cli --dry-run >/dev/null
+if [ ! -f "${WORK_DIR}/tar/manifests/runtime-manifest-linux-x86_64.txt" ]; then
+  echo "tar.gz package missing bundled runtime manifest" >&2
+  exit 1
+fi
 
 (
   cd "${WORK_DIR}/appimage"
@@ -56,6 +81,10 @@ if [ "${appimage_version}" != "${VERSION}" ]; then
   exit 1
 fi
 VCP_INSTALLER_STATE_DIR="${WORK_DIR}/appimage-state" "${WORK_DIR}/appimage/squashfs-root/usr/bin/vcp-installer" --cli --dry-run >/dev/null
+if [ ! -f "${WORK_DIR}/appimage/squashfs-root/usr/manifests/runtime-manifest-linux-x86_64.txt" ]; then
+  echo "AppImage package missing bundled runtime manifest" >&2
+  exit 1
+fi
 
 echo "Artifact verification passed."
 echo "Workspace: ${WORK_DIR}"

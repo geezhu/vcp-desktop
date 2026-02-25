@@ -36,6 +36,8 @@ jobs:
           set -euo pipefail
           ./scripts/build-tarball.sh
           ./scripts/build-appimage.sh
+          ./scripts/build-runtime-assets.sh
+          ./scripts/update-sha256sums.sh
 
           echo "Generated artifacts:"
           ls -lh dist

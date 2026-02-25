@@ -20,10 +20,13 @@ if [ ! -x "${APPIMAGETOOL}" ]; then
 fi
 
 rm -rf "${APPDIR}"
-mkdir -p "${APPDIR}/usr/bin" "${APPDIR}/usr/share/vcp-installer"
+mkdir -p "${APPDIR}/usr/bin" "${APPDIR}/usr/share/vcp-installer" "${APPDIR}/usr/manifests"
 
 install -m 755 "${ROOT_DIR}/bin/vcp-installer" "${APPDIR}/usr/bin/vcp-installer"
 install -m 644 "${ROOT_DIR}/VERSION" "${APPDIR}/usr/share/vcp-installer/VERSION"
+if compgen -G "${ROOT_DIR}/manifests/*.txt" > /dev/null; then
+  install -m 644 "${ROOT_DIR}"/manifests/*.txt "${APPDIR}/usr/manifests/"
+fi
 
 cat > "${APPDIR}/AppRun" <<'EOF'
 #!/usr/bin/env bash

@@ -15,6 +15,7 @@ tar -czf "${DIST_DIR}/${TAR_NAME}" \
   CHANGELOG.md \
   README.md \
   docs/*.md \
+  manifests/*.txt \
   bin/vcp-installer \
   scripts/*.sh
 

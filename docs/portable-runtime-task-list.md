@@ -2,7 +2,7 @@
 
 **目标**: 完成“初始化下载私有运行时，默认不全局安装”的可交付闭环。  
 **更新日期**: 2026-02-25  
-**状态**: Blocked（仅剩 GitHub 发布仓库地址确认）
+**状态**: In Progress（等待 v0.2.0 release 发布完成）
 
 ---
 
@@ -55,7 +55,7 @@
 
 ## 7. 需要项目管理员确认
 
-- [ ] 确认 runtime 二进制发布仓库（GitHub 仓库地址）。
+- [x] 确认 runtime 二进制发布仓库（GitHub: `geezhu/vcp-desktop`）。
 - [x] Gitee 镜像策略暂时冻结（忽略，不作为当前发布阻塞项）。
 - [x] 首发平台口径调整为 Linux `x86_64`（`glibc` 基线）；Ubuntu/Debian 仅作为回归测试基线。
 
@@ -63,5 +63,4 @@
 
 ## 8. 当前阻塞项（对外发布）
 
-1. 默认 manifest 仍是模板占位，未绑定可用线上产物地址。
-2. 发布前需要管理员确认 GitHub runtime 发布仓库地址（用于产物 URL 固化）。
+1. 需要完成 `v0.2.0` release 发布并上传 runtime 资产，确保 manifest URL 生效。
