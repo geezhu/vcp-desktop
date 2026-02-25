@@ -26,7 +26,7 @@ chmod +x bin/vcp-installer scripts/*.sh
 ./bin/vcp-installer resume --cli --dry-run
 ./bin/vcp-installer --headless --dry-run --simulate-gui-step
 ./bin/vcp-installer init --cli --yes --runtime-mode portable --runtime-manifest ./manifests/runtime-manifest-linux-x86_64.txt --workspace-root ~/vcp --backend-cmd "node server.js" --chat-cmd "npm run start"
-./bin/vcp-installer init --cli --yes --runtime-mode system --workspace-root ~/vcp --backend-cmd "node server.js" --chat-cmd "npm run start"
+./bin/vcp-installer init --cli --yes --runtime-mode system --allow-system-integration --workspace-root ~/vcp --backend-cmd "node server.js" --chat-cmd "npm run start"
 ./bin/vcp-installer start
 ./bin/vcp-installer status
 ./bin/vcp-installer stop
@@ -59,6 +59,7 @@ By default, local build outputs are generated in `dist/` and temporary AppImage 
 4. Default profile is user-level isolated (`~/.local/share/vcpinstallergui`) to reduce system environment pollution.
 5. Use `--install-plugin-python-deps` to include Plugin/**/requirements.txt install.
 6. Use `--strict-dependencies` to fail fast when required commands are missing.
+7. Non-interactive `--runtime-mode system` requires `--allow-system-integration` and writes audit log.
 
 ## Installer Outputs
 

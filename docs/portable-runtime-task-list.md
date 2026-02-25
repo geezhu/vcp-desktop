@@ -2,7 +2,7 @@
 
 **目标**: 完成“初始化下载私有运行时，默认不全局安装”的可交付闭环。  
 **更新日期**: 2026-02-25  
-**状态**: In Progress（Core Done, Release Source Confirm Pending）
+**状态**: Blocked（仅剩发布源确认）
 
 ---
 
@@ -37,7 +37,7 @@
 - [x] 生成 runtime wrapper（注入私有 `PATH`/`LD_LIBRARY_PATH`）。
 - [x] `start` 仅使用已准备运行时，不触发下载副作用。
 - [x] 增加可选开关 `--runtime-mode portable|system`（默认 portable）。
-- [ ] 系统集成模式必须二次确认并记录审计日志（当前仅参数开关，未实现交互确认/审计落盘）。
+- [x] 系统集成模式支持二次确认并记录审计日志（`--allow-system-integration` + audit log）。
 
 ## 5. 可观测性与恢复
 

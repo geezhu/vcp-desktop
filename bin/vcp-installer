@@ -33,6 +33,7 @@ RUNTIME_MODE_CLI_SET=0
 RUNTIME_MANIFEST_ARG="${VCP_RUNTIME_MANIFEST:-}"
 RESET_RUNTIME=0
 INIT_RESUME_MODE=0
+ALLOW_SYSTEM_INTEGRATION=0
 
 VCP_API_URL_ARG="${VCP_API_URL:-}"
 VCP_API_KEY_ARG="${VCP_API_KEY:-}"
@@ -134,6 +135,7 @@ RUNTIME_COMPONENTS_DIR="${RUNTIME_ROOT}/components"
 RUNTIME_BIN_DIR="${RUNTIME_ROOT}/bin"
 RUNTIME_STATE_FILE="${RUNTIME_ROOT}/runtime-state.env"
 RUNTIME_STATUS_JSON="${RUNTIME_ROOT}/runtime-status.json"
+SYSTEM_INTEGRATION_AUDIT_FILE="${INSTALLER_HOME}/reports/system-integration-audit.log"
 DEFAULT_RUNTIME_MANIFEST="${ROOT_DIR}/manifests/runtime-manifest-${PLATFORM_TAG}.txt"
 
 mkdir -p \
@@ -184,6 +186,8 @@ Options:
   --no-start-after-init   Initialize only, do not auto-start services
   --runtime-mode <mode>   Runtime mode: portable|system (default portable)
   --runtime-manifest <p>  Runtime manifest path/URL for portable bootstrap
+  --allow-system-integration
+                           Confirm system mode usage and write audit record
   --reset-runtime         With reset, also remove runtime cache/components
   --workspace-root <dir>  Workspace root path (for init)
   --components <value>    Install targets: all|toolbox|chat|toolbox,chat
@@ -217,6 +221,7 @@ Examples:
   vcp-installer install --cli --yes --components all
   vcp-installer init --gui
   vcp-installer init --cli --yes --runtime-mode portable --runtime-manifest ./manifests/runtime-manifest-linux-x86_64.txt --workspace-root ~/vcp --backend-cmd "node server.js" --chat-cmd "npm run start"
+  vcp-installer init --cli --yes --runtime-mode system --allow-system-integration --workspace-root ~/vcp
   vcp-installer start
   vcp-installer stop
   vcp-installer status
@@ -301,6 +306,7 @@ save_init_profile_snapshot() {
     printf 'STARTUP_DELAY=%q\n' "${STARTUP_DELAY}"
     printf 'RUNTIME_MODE=%q\n' "${RUNTIME_MODE}"
     printf 'RUNTIME_MANIFEST_ARG=%q\n' "${RUNTIME_MANIFEST_ARG}"
+    printf 'ALLOW_SYSTEM_INTEGRATION=%q\n' "${ALLOW_SYSTEM_INTEGRATION}"
     printf 'NO_START_AFTER_INIT=%q\n' "${NO_START_AFTER_INIT}"
   } > "${profile_file}"
 }
@@ -344,6 +350,52 @@ validate_runtime_mode() {
       ;;
     *)
       echo "Invalid --runtime-mode: ${RUNTIME_MODE} (supported: portable|system)" >&2
+      return 1
+      ;;
+  esac
+}
+
+record_system_integration_audit() {
+  local reason="$1"
+  if [ "${DRY_RUN}" -eq 1 ]; then
+    log INFO "Dry-run: would write system integration audit record (${reason})"
+    return
+  fi
+
+  mkdir -p "$(dirname "${SYSTEM_INTEGRATION_AUDIT_FILE}")"
+  printf '%s session=%s mode=system reason=%s workspace=%s\n' \
+    "$(timestamp)" \
+    "${SESSION_ID}" \
+    "${reason}" \
+    "${WORKSPACE_ROOT_VAL:-<unset>}" >> "${SYSTEM_INTEGRATION_AUDIT_FILE}"
+}
+
+confirm_system_integration_mode() {
+  local answer
+
+  if [ "${RUNTIME_MODE}" != "system" ]; then
+    return 0
+  fi
+
+  if [ "${ALLOW_SYSTEM_INTEGRATION}" -eq 1 ]; then
+    record_system_integration_audit "explicit-flag"
+    return 0
+  fi
+
+  if [ "${HEADLESS}" -eq 1 ] || [ "${AUTO_APPROVE}" -eq 1 ]; then
+    log ERROR "System mode requires explicit --allow-system-integration in non-interactive/headless run."
+    return 1
+  fi
+
+  read -r -p "System mode may integrate with global environment. Continue? [y/N]: " answer || true
+  case "${answer}" in
+    y|Y|yes|YES)
+      ALLOW_SYSTEM_INTEGRATION=1
+      record_system_integration_audit "interactive-confirmed"
+      return 0
+      ;;
+    *)
+      log ERROR "System mode not confirmed by user."
       return 1
       ;;
   esac
@@ -1908,6 +1960,11 @@ run_init() {
     exit 22
   fi
 
+  if ! confirm_system_integration_mode; then
+    write_state "${SESSION_FILE}" "S20_INITIALIZE" "failed" "system-mode-not-confirmed"
+    exit 26
+  fi
+
   save_init_profile_snapshot
 
   if ! run_runtime_bootstrap; then
@@ -2128,6 +2185,10 @@ while [ $# -gt 0 ]; do
     --runtime-manifest)
       RUNTIME_MANIFEST_ARG="${2:-}"
       shift 2
+      ;;
+    --allow-system-integration)
+      ALLOW_SYSTEM_INTEGRATION=1
+      shift
       ;;
     --reset-runtime)
       RESET_RUNTIME=1

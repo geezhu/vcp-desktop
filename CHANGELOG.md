@@ -21,6 +21,7 @@ All notable changes to this project will be documented in this file.
 - Runtime wrapper generation and start-time isolation (`PATH`/`LD_LIBRARY_PATH`) for portable mode.
 - Runtime-aware status/reset/resume paths and install report `global_mutation` gate fields.
 - Smoke and regression coverage for checksum-fail -> resume recovery and source fallback scenarios.
+- Explicit system-mode confirmation and audit logging (`--allow-system-integration`).
 
 ### Changed
 

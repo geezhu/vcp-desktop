@@ -342,6 +342,7 @@ VCP_INSTALLER_HOME="${INSTALLER_HOME}" \
 VCP_INSTALLER_STATE_DIR="${STATE_DIR}" \
 "${INSTALLER}" --cli --yes \
   --runtime-mode system \
+  --allow-system-integration \
   --workspace-root "${RUNTIME_DIR}" \
   --backend-cwd "${RUNTIME_DIR}/backend" \
   --backend-cmd "./start-backend.sh" \
