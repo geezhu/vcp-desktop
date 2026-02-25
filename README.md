@@ -92,6 +92,7 @@ By default, local build outputs are generated in `dist/` and temporary AppImage 
 3. Portable runtime design: `docs/portable-runtime-design.md`
 4. Portable runtime task list: `docs/portable-runtime-task-list.md`
 5. Runtime network regression: `docs/runtime-network-regression.md`
+6. Open review items: `docs/review-open-items.md`
 
 ## Release Signature
 
