@@ -76,6 +76,8 @@ By default, local build outputs are generated in `dist/` and temporary AppImage 
 5. Validate manifest: `./scripts/validate-runtime-manifest.sh manifests/runtime-manifest-linux-x86_64.txt linux-x86_64`.
 6. Network regression (fallback/offline/resume): `./scripts/runtime-regression.sh`.
 7. The default manifest is a template; replace artifact URLs and SHA256 values before production init.
+8. Current platform target is Linux `x86_64` (`glibc` baseline); Ubuntu/Debian are regression baselines, not exclusive distro locks.
+9. Gitee mirror strategy is currently frozen; GitHub release source is the active publish path.
 
 ## Design Docs
 

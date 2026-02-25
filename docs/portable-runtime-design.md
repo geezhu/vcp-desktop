@@ -1,6 +1,6 @@
 # Portable Runtime 设计说明
 
-**文档版本**: 0.3.0  
+**文档版本**: 0.3.1  
 **创建日期**: 2026-02-25  
 **更新日期**: 2026-02-25  
 **状态**: In Progress（Core Implemented）
@@ -12,14 +12,14 @@
 1. 默认采用 Portable 模式：在 `init` 阶段下载私有运行时。
 2. 默认不安装系统全局包，不修改系统级 PATH，不写入系统服务。
 3. 运行时文件统一放在用户隔离目录，可整体删除回收。
-4. 该方案在 Linux（Ubuntu/Debian 首发基线）可行，作为当前实现主路径。
+4. 该方案在 Linux `x86_64`（`glibc` 基线）可行，作为当前实现主路径；Ubuntu/Debian 仅作回归基线。
 
 ---
 
 ## 2. 可行性确认（结论）
 
 1. 可行：可通过预编译运行时 + 校验清单，在 `init` 阶段完成自举。
-2. 下载源可使用 GitHub Releases，并配置 Gitee 镜像回退。
+2. 下载源当前采用 GitHub Releases 主源；Gitee 镜像策略暂时冻结，不作为发布阻塞项。
 3. 启动时通过 wrapper 注入私有 `PATH`/`LD_LIBRARY_PATH`，避免污染系统环境。
 4. 若网络不可用或校验失败，流程应阻断在 `init`，并提供 `resume` 继续能力。
 5. 不同发行版的底层 ABI 差异依旧存在，需要通过平台清单和兼容提示做前置约束。
@@ -67,7 +67,7 @@
    - `url_mirror`
    - `sha256`
    - `signature`（可选）
-2. 默认下载优先级：`GitHub` -> `Gitee`。
+2. 当前默认下载源：`GitHub`；`url_mirror` 字段保留，但本阶段不强依赖 Gitee。
 3. 同一版本在不同源必须保持同文件名、同 SHA256。
 4. 清单更新需版本化，避免客户端和清单不兼容。
 
@@ -121,4 +121,4 @@
 3. 已实现 `--runtime-mode portable|system`，`start` 支持 portable wrapper 启动。
 4. 已实现 `status` 运行时健康输出与 `reset --reset-runtime` 清理。
 5. 已实现 smoke 与回归脚本覆盖（mock 下载、失败恢复、镜像回退）。
-6. 待阻塞项：发布仓库与镜像仓库地址未最终确认，默认 manifest 仍为模板占位。
+6. 待阻塞项：GitHub runtime 发布仓库地址未最终确认，默认 manifest 仍为模板占位。
